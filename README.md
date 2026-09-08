@@ -88,13 +88,15 @@ service role key, y la autorizacion la resuelve la API — no RLS.
 | POST   | `/api/v1/auth/login`           | No         | Valida credenciales y emite el JWT de sesion.     |
 | GET    | `/api/v1/auth/me`              | Bearer     | Perfil del usuario autenticado.                   |
 | POST   | `/api/v1/auth/change-password` | Bearer     | Cambia la propia contrasena y renueva el token.   |
-| GET    | `/api/v1/users`                | ADMIN o PM | Lista usuarios con paginacion, busqueda y filtros.|
-| POST   | `/api/v1/users`                | ADMIN o PM | Crea un usuario.                                  |
-| GET    | `/api/v1/users/:id`            | ADMIN o PM | Detalle de un usuario.                            |
-| PATCH  | `/api/v1/users/:id`            | ADMIN o PM | Actualiza un usuario.                             |
-| DELETE | `/api/v1/users/:id`            | ADMIN o PM | Baja logica (`is_active = false`).                |
+| GET    | `/api/v1/users`                | ADMIN o MANAGER | Lista usuarios con paginacion, busqueda y filtros.|
+| POST   | `/api/v1/users`                | ADMIN o MANAGER | Crea un usuario.                                  |
+| GET    | `/api/v1/users/:id`            | ADMIN o MANAGER | Detalle de un usuario.                            |
+| PATCH  | `/api/v1/users/:id`            | ADMIN o MANAGER | Actualiza un usuario.                             |
+| DELETE | `/api/v1/users/:id`            | ADMIN o MANAGER | Baja logica (`is_active = false`).                |
+| GET    | `/api/v1/users/:id/projects`   | ADMIN o MANAGER | Proyectos en los que esta la persona.             |
+| POST   | `/api/v1/users/:id/projects`   | ADMIN o MANAGER | Le asigna un proyecto.                            |
+| DELETE | `/api/v1/users/:id/projects/:assignmentId` | ADMIN o MANAGER | Baja logica de esa asignacion.        |
 | PATCH  | `/api/v1/users/me`             | Bearer     | El usuario cambia su propio nombre.               |
-
 
 ### Login
 

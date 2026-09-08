@@ -27,6 +27,14 @@ export type NewUserRow = {
   must_change_password: boolean;
 };
 
+export type NewUserAssignment = {
+  projectId: number;
+  payRate: number;
+  currency: string;
+  startDate: string;
+  endDate: string | null;
+};
+
 export type UserPatch = {
   role_id?: number;
   full_name?: string;
@@ -51,9 +59,11 @@ export type ListUsersFilters = {
 };
 
 const USER_COLUMNS =
-  'id, full_name, user_name, email, job_title, is_active, must_change_password, last_login_at, role:ROLES!inner(id, code, name)';
+  'id, full_name, user_name, email, job_title, is_active, must_change_password, last_login_at, ' +
+  'role:ROLES!inner(id, code, name)';
 
 const UNIQUE_VIOLATION = '23505';
+const FOREIGN_KEY_VIOLATION = '23503';
 
 function fail(operation: string, error: unknown): never {
   logger.error({ err: error, operation }, 'Fallo de acceso a datos en el modulo users');
@@ -93,15 +103,39 @@ export async function findRoleByCode(code: string): Promise<RoleRecord | null> {
   return data ?? null;
 }
 
-export async function insertUser(row: NewUserRow): Promise<UserRecord> {
-  const { data, error } = await supabase.from('USERS').insert(row).select(USER_COLUMNS).single();
+export async function insertUser(
+  row: NewUserRow,
+  assignments: NewUserAssignment[],
+): Promise<UserRecord> {
+  const { data, error } = await supabase.rpc('fn_create_user_with_assignments', {
+    p_user: {
+      roleId: row.role_id,
+      fullName: row.full_name,
+      userName: row.user_name,
+      email: row.email,
+      passwordHash: row.password_hash,
+      jobTitle: row.job_title,
+      isActive: row.is_active,
+      mustChangePassword: row.must_change_password,
+    },
+    p_assignments: assignments,
+  });
 
   if (error) {
     throwIfDuplicate(error);
+    if (error.code === FOREIGN_KEY_VIOLATION || error.message.startsWith('PROJECT_NOT_FOUND')) {
+      throw ApiError.badRequest('Alguno de los proyectos indicados no existe');
+    }
     fail('insertUser', error);
   }
 
-  return data as UserRecord;
+  const created = await findUserById(Number(data));
+
+  if (!created) {
+    fail('insertUser', new Error('El usuario recien creado no se pudo releer'));
+  }
+
+  return created;
 }
 
 export async function findUserById(id: number): Promise<UserRecord | null> {
@@ -113,7 +147,7 @@ export async function findUserById(id: number): Promise<UserRecord | null> {
 
   if (error) fail('findUserById', error);
 
-  return (data as UserRecord | null) ?? null;
+  return (data as unknown as UserRecord | null) ?? null;
 }
 
 export async function findUsers(
@@ -143,7 +177,7 @@ export async function findUsers(
 
   if (error) fail('findUsers', error);
 
-  return { rows: (data ?? []) as UserRecord[], total: count ?? 0 };
+  return { rows: (data ?? []) as unknown as UserRecord[], total: count ?? 0 };
 }
 
 export async function updateUser(id: number, patch: UserPatch): Promise<UserRecord | null> {
@@ -159,5 +193,5 @@ export async function updateUser(id: number, patch: UserPatch): Promise<UserReco
     fail('updateUser', error);
   }
 
-  return (data as UserRecord | null) ?? null;
+  return (data as unknown as UserRecord | null) ?? null;
 }

@@ -8,7 +8,10 @@ import {
   listUsersQuerySchema,
   updateOwnProfileSchema,
   updateUserSchema,
+  updateUserProjectSchema,
+  userAssignmentParamsSchema,
   userIdParamSchema,
+  userProjectSchema,
 } from './users.schema.js';
 import { USER_MANAGER_ROLES } from './users.permissions.js';
 
@@ -56,6 +59,42 @@ usersRouter.patch(
   requireRoles(...USER_MANAGER_ROLES),
   validate({ params: userIdParamSchema, body: updateUserSchema }),
   asyncHandler(usersController.update),
+);
+
+usersRouter.get(
+  '/:id/projects',
+  requireAuth,
+  requirePasswordChanged,
+  requireRoles(...USER_MANAGER_ROLES),
+  validate({ params: userIdParamSchema }),
+  asyncHandler(usersController.listProjects),
+);
+
+usersRouter.post(
+  '/:id/projects',
+  requireAuth,
+  requirePasswordChanged,
+  requireRoles(...USER_MANAGER_ROLES),
+  validate({ params: userIdParamSchema, body: userProjectSchema }),
+  asyncHandler(usersController.assignProject),
+);
+
+usersRouter.patch(
+  '/:id/projects/:assignmentId',
+  requireAuth,
+  requirePasswordChanged,
+  requireRoles(...USER_MANAGER_ROLES),
+  validate({ params: userAssignmentParamsSchema, body: updateUserProjectSchema }),
+  asyncHandler(usersController.updateProject),
+);
+
+usersRouter.delete(
+  '/:id/projects/:assignmentId',
+  requireAuth,
+  requirePasswordChanged,
+  requireRoles(...USER_MANAGER_ROLES),
+  validate({ params: userAssignmentParamsSchema }),
+  asyncHandler(usersController.removeProject),
 );
 
 usersRouter.delete(
