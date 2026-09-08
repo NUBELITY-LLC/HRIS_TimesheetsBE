@@ -1,15 +1,29 @@
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { hashPassword } from '../../utils/password.js';
+import { ASSIGNABLE_ROLES } from '../../utils/roles.js';
+import * as projectsRepository from '../projects/projects.repository.js';
+import type { ConsultantAssignmentRecord } from '../projects/projects.repository.js';
+import * as projectsService from '../projects/projects.service.js';
+import { assertWithinProject } from '../projects/projects.service.js';
 import * as usersRepository from './users.repository.js';
-import type { SortColumn, UserPatch, UserRecord } from './users.repository.js';
+import type {
+  NewUserAssignment,
+  SortColumn,
+  UserPatch,
+  UserRecord,
+} from './users.repository.js';
 import { canManageRole, manageableRolesFor } from './users.permissions.js';
 import type {
   CreateUserInput,
   ListUsersQuery,
   UpdateOwnProfileInput,
   UpdateUserInput,
+  UpdateUserProjectInput,
+  UserProjectInput,
 } from './users.schema.js';
+
+const DEFAULT_CURRENCY = 'USD';
 
 export type UserView = {
   id: number;
@@ -24,6 +38,23 @@ export type UserView = {
 };
 
 export type Actor = { id: number; roleCode: string };
+
+export type UserProjectView = {
+  assignmentId: number;
+  payRate: number;
+  currency: string;
+  startDate: string;
+  endDate: string | null;
+  isActive: boolean;
+  project: {
+    id: number;
+    projectName: string;
+    code: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    client: { id: number; name: string; isActive: boolean } | null;
+  } | null;
+};
 
 const SORT_COLUMNS: Record<ListUsersQuery['sortBy'], SortColumn> = {
   id: 'id',
@@ -49,6 +80,33 @@ function toUserView(record: UserRecord): UserView {
     mustChangePassword: record.must_change_password,
     lastLoginAt: record.last_login_at,
     role: record.role,
+  };
+}
+
+function toUserProjectView(record: ConsultantAssignmentRecord): UserProjectView {
+  return {
+    assignmentId: record.id,
+    payRate: Number(record.pay_rate),
+    currency: record.currency,
+    startDate: record.start_date,
+    endDate: record.end_date,
+    isActive: record.is_active,
+    project: record.project
+      ? {
+          id: record.project.id,
+          projectName: record.project.project_name,
+          code: record.project.code,
+          startDate: record.project.start_date,
+          endDate: record.project.end_date,
+          client: record.project.client
+            ? {
+                id: record.project.client.id,
+                name: record.project.client.client_name,
+                isActive: record.project.client.is_active,
+              }
+            : null,
+        }
+      : null,
   };
 }
 
@@ -101,21 +159,60 @@ async function loadManageableUser(id: number, actor: Actor): Promise<UserRecord>
   return record;
 }
 
+async function resolveAssignments(projects: UserProjectInput[]): Promise<NewUserAssignment[]> {
+  const assignments: NewUserAssignment[] = [];
+
+  for (const [index, item] of projects.entries()) {
+    const project = await projectsRepository.findProjectById(item.projectId);
+
+    if (!project) {
+      throw ApiError.badRequest('El proyecto indicado no existe', {
+        field: `projects.${index}.projectId`,
+      });
+    }
+
+    assertWithinProject(project, item.startDate, item.endDate ?? null);
+
+    assignments.push({
+      projectId: item.projectId,
+      payRate: item.payRate,
+      currency: DEFAULT_CURRENCY,
+      startDate: item.startDate,
+      endDate: item.endDate ?? null,
+    });
+  }
+
+  return assignments;
+}
+
 export async function createUser(input: CreateUserInput, actor: Actor): Promise<UserView> {
   const role = await resolveRole(input.roleCode, actor);
 
-  const created = await usersRepository.insertUser({
-    role_id: role.id,
-    full_name: input.fullName,
-    user_name: input.userName,
-    email: input.email,
-    password_hash: await hashPassword(input.password),
-    job_title: input.jobTitle ?? null,
-    is_active: input.isActive ?? true,
-    must_change_password: true,
-  });
+  const assignments = await resolveAssignments(input.projects ?? []);
 
-  logger.info({ userId: created.id, roleCode: role.code, createdBy: actor.id }, 'Usuario creado');
+  const created = await usersRepository.insertUser(
+    {
+      role_id: role.id,
+      full_name: input.fullName,
+      user_name: input.userName,
+      email: input.email,
+      password_hash: await hashPassword(input.password),
+      job_title: input.jobTitle ?? null,
+      is_active: input.isActive ?? true,
+      must_change_password: true,
+    },
+    assignments,
+  );
+
+  logger.info(
+    {
+      userId: created.id,
+      roleCode: role.code,
+      createdBy: actor.id,
+      projectIds: assignments.map((assignment) => assignment.projectId),
+    },
+    'Usuario creado',
+  );
 
   return toUserView(created);
 }
@@ -240,4 +337,79 @@ export async function updateOwnProfile(
   logger.info({ userId: actorId }, 'Perfil actualizado por el propio usuario');
 
   return toUserView(updated);
+}
+
+function assertAssignableUser(record: UserRecord): void {
+  if (!ASSIGNABLE_ROLES.includes(record.role?.code ?? '')) {
+    throw ApiError.unprocessable(
+      `Solo se asignan proyectos a usuarios con rol ${ASSIGNABLE_ROLES.join(' o ')}`,
+      { field: 'roleCode', allowedRoles: ASSIGNABLE_ROLES },
+    );
+  }
+}
+
+export async function listUserProjects(id: number, actor: Actor): Promise<UserProjectView[]> {
+  await loadManageableUser(id, actor);
+
+  const records = await projectsRepository.findAssignmentsByConsultant(id);
+
+  return records.map(toUserProjectView);
+}
+
+export async function assignProjectToUser(
+  id: number,
+  input: UserProjectInput,
+  actor: Actor,
+): Promise<projectsService.AssignmentView> {
+  const target = await loadManageableUser(id, actor);
+  assertAssignableUser(target);
+
+  return projectsService.assignConsultant(
+    input.projectId,
+    {
+      consultantId: id,
+      payRate: input.payRate,
+      currency: DEFAULT_CURRENCY,
+      startDate: input.startDate,
+      endDate: input.endDate ?? null,
+    },
+    actor,
+  );
+}
+
+async function loadUserAssignment(
+  id: number,
+  assignmentId: number,
+  actor: Actor,
+): Promise<{ project_id: number }> {
+  await loadManageableUser(id, actor);
+
+  const assignment = await projectsRepository.findAssignmentById(assignmentId);
+
+  if (!assignment || assignment.consultant_id !== id) {
+    throw ApiError.notFound('La asignacion no existe para este usuario');
+  }
+
+  return assignment;
+}
+
+export async function updateUserProject(
+  id: number,
+  assignmentId: number,
+  input: UpdateUserProjectInput,
+  actor: Actor,
+): Promise<projectsService.AssignmentView> {
+  const assignment = await loadUserAssignment(id, assignmentId, actor);
+
+  return projectsService.updateAssignment(assignment.project_id, assignmentId, input, actor);
+}
+
+export async function removeUserProject(
+  id: number,
+  assignmentId: number,
+  actor: Actor,
+): Promise<projectsService.AssignmentView> {
+  const assignment = await loadUserAssignment(id, assignmentId, actor);
+
+  return projectsService.deactivateAssignment(assignment.project_id, assignmentId, actor);
 }

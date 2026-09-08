@@ -1,9 +1,57 @@
+create table if not exists public."ROLES" (
+  id        bigint generated always as identity primary key,
+  code      varchar(30)  not null unique,
+  name      varchar(80)  not null
+);
+
+create table if not exists public."USERS" (
+  id                   bigint generated always as identity primary key,
+  role_id              bigint       not null references public."ROLES"(id),
+  full_name            varchar(150) not null,
+  user_name            varchar(50)  not null unique,
+  email                varchar(254) not null unique,
+  password_hash        varchar(255) not null,
+  job_title            varchar(100),
+  failed_attempts      smallint     not null default 0,
+  locked_until         timestamp,
+  last_login_at        timestamp,
+  is_active            boolean      not null default true,
+  must_change_password boolean      not null default false
+);
+
+create index if not exists "idx_USERS_role_id" on public."USERS" (role_id);
+create index if not exists "idx_USERS_is_active" on public."USERS" (is_active);
+create index if not exists "idx_USERS_lower_user_name" on public."USERS" (lower(user_name));
+create index if not exists "idx_USERS_lower_email" on public."USERS" (lower(email));
+
+create table if not exists public."COMPANIES" (
+  id         bigint       generated always as identity primary key,
+  legal_name varchar(200) not null,
+  trade_name varchar(150) not null,
+  rfc        varchar(13),
+  is_active  boolean      not null default true,
+  constraint "chk_COMPANIES_rfc_length" check (rfc is null or char_length(rfc) in (12, 13)),
+  constraint "chk_COMPANIES_rfc_upper"  check (rfc is null or rfc = upper(rfc))
+);
+
+create unique index if not exists "idx_COMPANIES_rfc"
+  on public."COMPANIES" (rfc) where rfc is not null;
+create unique index if not exists "idx_COMPANIES_lower_legal_name"
+  on public."COMPANIES" (lower(legal_name));
+create index if not exists "idx_COMPANIES_is_active" on public."COMPANIES" (is_active);
+
 create table if not exists public."CLIENTS" (
   id            bigint generated always as identity primary key,
+  company_id    bigint       not null references public."COMPANIES"(id),
   client_name   varchar(150) not null,
   contact_email varchar(150),
   is_active     boolean      not null default true
 );
+
+create index if not exists "idx_CLIENTS_company_id" on public."CLIENTS" (company_id);
+
+create unique index if not exists "idx_CLIENTS_company_id_lower_client_name"
+  on public."CLIENTS" (company_id, lower(client_name));
 
 create table if not exists public."PROJECTS" (
   id           bigint generated always as identity primary key,
@@ -318,6 +366,311 @@ create trigger "trg_TIMESHEET_DAYS_recalc_timesheet"
   after insert or update or delete on public."TIMESHEET_DAYS"
   for each row execute function public.fn_recalc_timesheet_hours();
 
+create or replace function public.fn_create_user_with_assignments(
+  p_user        jsonb,
+  p_assignments jsonb
+) returns bigint
+language plpgsql
+as $$
+declare
+  v_user_id    bigint;
+  v_assignment jsonb;
+begin
+  insert into public."USERS" (
+    role_id, full_name, user_name, email, password_hash, job_title,
+    is_active, must_change_password
+  ) values (
+    (p_user ->> 'roleId')::bigint,
+    p_user ->> 'fullName',
+    p_user ->> 'userName',
+    p_user ->> 'email',
+    p_user ->> 'passwordHash',
+    p_user ->> 'jobTitle',
+    coalesce((p_user ->> 'isActive')::boolean, true),
+    coalesce((p_user ->> 'mustChangePassword')::boolean, true)
+  )
+  returning id into v_user_id;
+
+  for v_assignment in select * from jsonb_array_elements(coalesce(p_assignments, '[]'::jsonb))
+  loop
+    if not exists (
+      select 1 from public."PROJECTS" where id = (v_assignment ->> 'projectId')::bigint
+    ) then
+      raise exception 'PROJECT_NOT_FOUND:%', v_assignment ->> 'projectId';
+    end if;
+
+    insert into public."PROJECT_ASSIGNMENTS"
+      (project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active)
+    values (
+      (v_assignment ->> 'projectId')::bigint,
+      v_user_id,
+      (v_assignment ->> 'payRate')::numeric,
+      coalesce(v_assignment ->> 'currency', 'USD'),
+      (v_assignment ->> 'startDate')::date,
+      (v_assignment ->> 'endDate')::date,
+      true
+    );
+  end loop;
+
+  return v_user_id;
+end;
+$$;
+
+create or replace function public.fn_replace_project_approval_steps(
+  p_project_id bigint,
+  p_steps      jsonb
+) returns integer
+language plpgsql
+as $$
+declare
+  v_step    jsonb;
+  v_role_id bigint;
+  v_total   integer := 0;
+begin
+  if not exists (select 1 from public."PROJECTS" where id = p_project_id) then
+    raise exception 'PROJECT_NOT_FOUND';
+  end if;
+
+  delete from public."PROJECT_APPROVAL_STEPS" where project_id = p_project_id;
+
+  for v_step in select * from jsonb_array_elements(coalesce(p_steps, '[]'::jsonb))
+  loop
+    v_role_id := null;
+
+    if v_step ->> 'approverType' = 'ROLE' then
+      select id into v_role_id from public."ROLES" where code = v_step ->> 'roleCode';
+
+      if v_role_id is null then
+        raise exception 'ROLE_NOT_FOUND:%', v_step ->> 'roleCode';
+      end if;
+    end if;
+
+    insert into public."PROJECT_APPROVAL_STEPS"
+      (project_id, seq, approver_type, user_id, role_id, is_active)
+    values (
+      p_project_id,
+      (v_step ->> 'seq')::smallint,
+      v_step ->> 'approverType',
+      case when v_step ->> 'approverType' = 'USER' then (v_step ->> 'userId')::bigint end,
+      v_role_id,
+      true
+    );
+
+    v_total := v_total + 1;
+  end loop;
+
+  return v_total;
+end;
+$$;
+
+create or replace function public.fn_save_timesheet_draft(
+  p_assignment_id bigint,
+  p_week_start    date,
+  p_actor_id      bigint,
+  p_actor_role_code varchar,
+  p_days          jsonb
+) returns bigint
+language plpgsql
+as $$
+declare
+  v_timesheet_id bigint;
+  v_status       varchar(20);
+  v_created      boolean := false;
+  v_day          jsonb;
+  v_day_id       bigint;
+begin
+  select id, status
+    into v_timesheet_id, v_status
+    from public."TIMESHEETS"
+   where assignment_id = p_assignment_id
+     and week_start_date = p_week_start
+     for update;
+
+  if not found then
+    insert into public."TIMESHEETS" (assignment_id, week_start_date, week_end_date, status)
+    values (p_assignment_id, p_week_start, p_week_start + 6, 'DRAFT')
+    returning id, status into v_timesheet_id, v_status;
+
+    v_created := true;
+  elsif v_status not in ('DRAFT', 'REJECTED') then
+    raise exception 'TIMESHEET_LOCKED:%', v_status;
+  end if;
+
+  delete from public."TIMESHEET_DAYS" where timesheet_id = v_timesheet_id;
+
+  for v_day in select * from jsonb_array_elements(coalesce(p_days, '[]'::jsonb))
+  loop
+    insert into public."TIMESHEET_DAYS" (timesheet_id, work_date, note)
+    values (
+      v_timesheet_id,
+      (v_day ->> 'workDate')::date,
+      nullif(v_day ->> 'note', '')
+    )
+    returning id into v_day_id;
+
+    insert into public."TIMESHEET_ACTIVITIES" (day_id, line_no, hours, activity)
+    select
+      v_day_id,
+      line_no::smallint,
+      (activity ->> 'hours')::numeric,
+      activity ->> 'activity'
+      from jsonb_array_elements(coalesce(v_day -> 'activities', '[]'::jsonb))
+        with ordinality as entries(activity, line_no);
+  end loop;
+
+  insert into public."TIMESHEET_EVENTS" (
+    timesheet_id, actor_id, cycle_no, event_type, actor_role_code, from_status, to_status
+  )
+  select
+    v_timesheet_id,
+    p_actor_id,
+    t.cycle_no,
+    case when v_created then 'CREATED' else 'MODIFIED' end,
+    p_actor_role_code,
+    v_status,
+    t.status
+    from public."TIMESHEETS" t
+   where t.id = v_timesheet_id;
+
+  return v_timesheet_id;
+end;
+$$;
+
+create or replace function public.fn_submit_timesheet(
+  p_timesheet_id    bigint,
+  p_actor_id        bigint,
+  p_actor_role_code varchar
+) returns bigint
+language plpgsql
+as $$
+declare
+  v_timesheet   public."TIMESHEETS";
+  v_project_id  bigint;
+  v_cycle_no    smallint;
+  v_first_seq   smallint;
+  v_code        varchar(30);
+  v_from_status varchar(20);
+begin
+  select * into v_timesheet
+    from public."TIMESHEETS"
+   where id = p_timesheet_id
+     for update;
+
+  if not found then
+    raise exception 'TIMESHEET_NOT_FOUND';
+  end if;
+
+  if v_timesheet.status not in ('DRAFT', 'REJECTED') then
+    raise exception 'TIMESHEET_NOT_SUBMITTABLE:%', v_timesheet.status;
+  end if;
+
+  if v_timesheet.total_hours <= 0 then
+    raise exception 'TIMESHEET_EMPTY';
+  end if;
+
+  select a.project_id
+    into v_project_id
+    from public."PROJECT_ASSIGNMENTS" a
+   where a.id = v_timesheet.assignment_id;
+
+  if not exists (
+    select 1
+      from public."PROJECT_APPROVAL_STEPS" s
+     where s.project_id = v_project_id
+       and s.is_active
+  ) then
+    raise exception 'NO_APPROVAL_WORKFLOW';
+  end if;
+
+  v_from_status := v_timesheet.status;
+  v_cycle_no := case
+    when v_timesheet.status = 'REJECTED' then (v_timesheet.cycle_no + 1)::smallint
+    else v_timesheet.cycle_no
+  end;
+
+  delete from public."TIMESHEET_APPROVALS"
+   where timesheet_id = v_timesheet.id
+     and cycle_no = v_cycle_no;
+
+  insert into public."TIMESHEET_APPROVALS" (
+    timesheet_id, step_id, seq, cycle_no, approver_type,
+    approver_id, approver_role_code, status
+  )
+  select
+    v_timesheet.id, s.id, s.seq, v_cycle_no, s.approver_type,
+    s.user_id, r.code, 'PENDING'
+    from public."PROJECT_APPROVAL_STEPS" s
+    left join public."ROLES" r on r.id = s.role_id
+   where s.project_id = v_project_id
+     and s.is_active
+   order by s.seq;
+
+  select min(seq)
+    into v_first_seq
+    from public."TIMESHEET_APPROVALS"
+   where timesheet_id = v_timesheet.id
+     and cycle_no = v_cycle_no;
+
+  v_code := coalesce(
+    v_timesheet.submission_code,
+    'TS-' || to_char(v_timesheet.week_start_date, 'IYYY"W"IW')
+          || '-' || lpad(v_timesheet.id::text, 6, '0')
+  );
+
+  update public."TIMESHEETS"
+     set status          = 'SUBMITTED',
+         current_seq     = v_first_seq,
+         cycle_no        = v_cycle_no,
+         submission_code = v_code,
+         submitted_at    = now()
+   where id = v_timesheet.id
+   returning * into v_timesheet;
+
+  insert into public."TIMESHEET_EVENTS" (
+    timesheet_id, actor_id, from_seq, to_seq, cycle_no, event_type,
+    actor_role_code, from_status, to_status, metadata
+  )
+  values
+    (
+      v_timesheet.id, p_actor_id, null, v_first_seq, v_cycle_no, 'SUBMITTED',
+      p_actor_role_code, v_from_status, 'SUBMITTED',
+      jsonb_build_object(
+        'submissionCode', v_code,
+        'totalHours', v_timesheet.total_hours,
+        'cycleNo', v_cycle_no
+      )
+    ),
+    (
+      v_timesheet.id, p_actor_id, null, v_first_seq, v_cycle_no, 'STEP_ENTERED',
+      p_actor_role_code, 'SUBMITTED', 'SUBMITTED', '{}'::jsonb
+    );
+
+  insert into public."NOTIFICATIONS" (user_id, timesheet_id, kind, title, body)
+  select
+    u.id,
+    v_timesheet.id,
+    'REVIEW_REQUESTED',
+    'Timesheet ' || v_code || ' pendiente de tu revision',
+    'Semana del ' || to_char(v_timesheet.week_start_date, 'DD/MM/YYYY')
+      || ' con ' || trim(to_char(v_timesheet.total_hours, 'FM9990.99')) || ' horas.'
+    from public."TIMESHEET_APPROVALS" ap
+    join public."USERS" u
+      on (ap.approver_type = 'USER' and u.id = ap.approver_id)
+      or (ap.approver_type = 'ROLE' and u.role_id = (
+            select r.id from public."ROLES" r where r.code = ap.approver_role_code
+          ))
+   where ap.timesheet_id = v_timesheet.id
+     and ap.cycle_no = v_cycle_no
+     and ap.seq = v_first_seq
+     and u.is_active;
+
+  return v_timesheet.id;
+end;
+$$;
+
+alter table public."ROLES"                enable row level security;
+alter table public."USERS"                enable row level security;
+alter table public."COMPANIES"            enable row level security;
 alter table public."CLIENTS"              enable row level security;
 alter table public."PROJECTS"             enable row level security;
 alter table public."PROJECT_ASSIGNMENTS"  enable row level security;
@@ -331,3 +684,10 @@ alter table public."APPROVAL_REQUESTS"    enable row level security;
 alter table public."NOTIFICATIONS"        enable row level security;
 alter table public."PAYMENT_BATCHES"      enable row level security;
 alter table public."PAYMENTS"             enable row level security;
+
+insert into public."ROLES" (code, name) values
+  ('CONSULTANT', 'Consultant'),
+  ('EMPLOYEE',   'Employee'),
+  ('MANAGER',    'Manager'),
+  ('ADMIN',      'Administrator')
+on conflict (code) do nothing;

@@ -8,6 +8,8 @@ import type {
   ListUsersQuery,
   UpdateOwnProfileInput,
   UpdateUserInput,
+  UpdateUserProjectInput,
+  UserProjectInput,
 } from './users.schema.js';
 
 function requireActor(req: Request): usersService.Actor {
@@ -48,6 +50,42 @@ export async function update(req: Request, res: Response): Promise<void> {
 export async function deactivate(req: Request, res: Response): Promise<void> {
   const user = await usersService.deactivateUser(Number(req.params.id), requireActor(req));
   ok(res, { user });
+}
+
+export async function listProjects(req: Request, res: Response): Promise<void> {
+  const projects = await usersService.listUserProjects(Number(req.params.id), requireActor(req));
+  ok(res, { projects });
+}
+
+export async function assignProject(req: Request, res: Response): Promise<void> {
+  const assignment = await usersService.assignProjectToUser(
+    Number(req.params.id),
+    req.body as UserProjectInput,
+    requireActor(req),
+  );
+
+  created(res, { assignment });
+}
+
+export async function updateProject(req: Request, res: Response): Promise<void> {
+  const assignment = await usersService.updateUserProject(
+    Number(req.params.id),
+    Number(req.params.assignmentId),
+    req.body as UpdateUserProjectInput,
+    requireActor(req),
+  );
+
+  ok(res, { assignment });
+}
+
+export async function removeProject(req: Request, res: Response): Promise<void> {
+  const assignment = await usersService.removeUserProject(
+    Number(req.params.id),
+    Number(req.params.assignmentId),
+    requireActor(req),
+  );
+
+  ok(res, { assignment });
 }
 
 export async function updateMe(req: Request, res: Response): Promise<void> {

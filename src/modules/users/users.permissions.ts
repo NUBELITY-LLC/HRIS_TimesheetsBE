@@ -1,20 +1,23 @@
-export const ROLE_ADMIN = 'ADMIN';
-export const ROLE_PM = 'PM';
+import { ROLE_ADMIN, ROLE_CONSULTANT, ROLE_EMPLOYEE, ROLE_MANAGER } from '../../utils/roles.js';
 
-const PM_MANAGEABLE_ROLES = ['CONSULTANT', 'EMPLOYEE'] as const;
+export { ROLE_ADMIN, ROLE_MANAGER };
 
-export const USER_MANAGER_ROLES = [ROLE_ADMIN, ROLE_PM];
+const MANAGER_MANAGEABLE_ROLES = [ROLE_CONSULTANT, ROLE_EMPLOYEE] as const;
+
+export const USER_MANAGER_ROLES = [ROLE_ADMIN, ROLE_MANAGER];
 
 export function canManageRole(actorRoleCode: string, targetRoleCode: string): boolean {
   if (actorRoleCode === ROLE_ADMIN) return true;
-  if (actorRoleCode === ROLE_PM) {
-    return PM_MANAGEABLE_ROLES.includes(targetRoleCode as (typeof PM_MANAGEABLE_ROLES)[number]);
+  if (actorRoleCode === ROLE_MANAGER) {
+    return MANAGER_MANAGEABLE_ROLES.includes(
+      targetRoleCode as (typeof MANAGER_MANAGEABLE_ROLES)[number],
+    );
   }
   return false;
 }
 
 export function manageableRolesFor(actorRoleCode: string): string[] | 'ALL' {
   if (actorRoleCode === ROLE_ADMIN) return 'ALL';
-  if (actorRoleCode === ROLE_PM) return [...PM_MANAGEABLE_ROLES];
+  if (actorRoleCode === ROLE_MANAGER) return [...MANAGER_MANAGEABLE_ROLES];
   return [];
 }

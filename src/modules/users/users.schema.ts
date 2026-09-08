@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { passwordSchema } from '../../utils/password.js';
+import { ASSIGNABLE_ROLES, ROLE_CONSULTANT } from '../../utils/roles.js';
 
 const fullName = z
   .string({ message: 'El nombre completo es obligatorio' })
@@ -30,15 +31,98 @@ const roleCode = z
 
 const jobTitle = z.string().trim().max(100, 'El puesto excede los 100 caracteres');
 
-export const createUserSchema = z.object({
-  fullName,
-  userName,
-  email,
-  password,
-  roleCode,
-  jobTitle: jobTitle.optional(),
-  isActive: z.boolean().optional(),
-});
+const positiveId = z.coerce
+  .number({ message: 'El id debe ser numerico' })
+  .int('El id debe ser un numero entero')
+  .positive('El id debe ser mayor que cero');
+
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'La fecha debe tener el formato YYYY-MM-DD')
+  .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)), 'La fecha no es valida');
+
+const payRate = z
+  .number({ message: 'La tarifa es obligatoria' })
+  .nonnegative('La tarifa no puede ser negativa')
+  .max(99_999_999.99, 'La tarifa excede el maximo permitido')
+  .refine(
+    (value) => Number((value * 100).toFixed(0)) / 100 === value,
+    'La tarifa admite como maximo 2 decimales',
+  );
+
+export const userProjectSchema = z
+  .object({
+    projectId: positiveId,
+    payRate,
+    startDate: isoDate,
+    endDate: isoDate.nullish(),
+  })
+  .refine((value) => !value.endDate || value.endDate >= value.startDate, {
+    message: 'La fecha de fin no puede ser anterior a la de inicio',
+    path: ['endDate'],
+  });
+
+export const updateUserProjectSchema = z
+  .object({
+    payRate: payRate.optional(),
+    startDate: isoDate.optional(),
+    endDate: isoDate.nullish(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'Envia al menos un campo para actualizar',
+  })
+  .refine(
+    (value) => !value.startDate || !value.endDate || value.endDate >= value.startDate,
+    { message: 'La fecha de fin no puede ser anterior a la de inicio', path: ['endDate'] },
+  );
+
+export const createUserSchema = z
+  .object({
+    fullName,
+    userName,
+    email,
+    password,
+    roleCode,
+    jobTitle: jobTitle.optional(),
+    isActive: z.boolean().optional(),
+    projects: z
+      .array(userProjectSchema)
+      .max(20, 'Se admiten como maximo 20 proyectos en el alta')
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    const projects = value.projects ?? [];
+
+    if (value.roleCode === ROLE_CONSULTANT && projects.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['projects'],
+        message: 'Un usuario consultor requiere al menos un proyecto',
+      });
+    }
+
+    if (projects.length > 0 && !ASSIGNABLE_ROLES.includes(value.roleCode)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['projects'],
+        message: `Solo se asignan proyectos a usuarios con rol ${ASSIGNABLE_ROLES.join(' o ')}`,
+      });
+    }
+
+    const seen = new Set<number>();
+
+    projects.forEach((project, index) => {
+      if (seen.has(project.projectId)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['projects', index, 'projectId'],
+          message: 'El proyecto esta repetido en el alta',
+        });
+      }
+      seen.add(project.projectId);
+    });
+  });
 
 export const updateUserSchema = z
   .object({
@@ -58,11 +142,11 @@ export const updateOwnProfileSchema = z.object({
   fullName,
 });
 
-export const userIdParamSchema = z.object({
-  id: z.coerce
-    .number({ message: 'El id debe ser numerico' })
-    .int('El id debe ser un numero entero')
-    .positive('El id debe ser mayor que cero'),
+export const userIdParamSchema = z.object({ id: positiveId });
+
+export const userAssignmentParamsSchema = z.object({
+  id: positiveId,
+  assignmentId: positiveId,
 });
 
 export const listUsersQuerySchema = z.object({
@@ -90,6 +174,8 @@ export const listUsersQuerySchema = z.object({
   sortDir: z.enum(['asc', 'desc']).default('asc'),
 });
 
+export type UserProjectInput = z.infer<typeof userProjectSchema>;
+export type UpdateUserProjectInput = z.infer<typeof updateUserProjectSchema>;
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 export type UpdateOwnProfileInput = z.infer<typeof updateOwnProfileSchema>;
