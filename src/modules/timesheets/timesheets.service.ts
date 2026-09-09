@@ -324,7 +324,7 @@ function buildDraftPayload(
       return;
     }
 
-    const activities = day.activities.filter((activity) => activity.activity.length > 0);
+    const activities = day.activities;
     const dayMinutes = activities.reduce((total, activity) => total + activity.minutes, 0);
 
     if (dayMinutes > DAY_MAX_MINUTES) {
@@ -438,6 +438,26 @@ export async function saveDraft(input: SaveDraftInput, actor: Actor): Promise<Ti
   return getTimesheet(timesheetId, actor);
 }
 
+async function assertActivitiesDescribed(timesheetId: number): Promise<void> {
+  const days = await repository.findDays(timesheetId);
+  const issues: Array<{ path: string; message: string }> = [];
+
+  for (const day of days) {
+    for (const activity of day.activities) {
+      if (activity.activity.trim().length) continue;
+
+      issues.push({
+        path: `days.${day.work_date}.activities.${activity.line_no}.activity`,
+        message: `El dia ${day.work_date} tiene una tarea sin descripcion`,
+      });
+    }
+  }
+
+  if (issues.length) {
+    throw ApiError.unprocessable('Describe todas las tareas antes de enviar', issues);
+  }
+}
+
 export async function submitTimesheet(
   id: number,
   actor: Actor,
@@ -477,6 +497,8 @@ export async function submitTimesheet(
   if (Number(record.total_hours) <= 0) {
     throw new ApiError(422, 'Registra al menos una actividad antes de enviar', 'TIMESHEET_EMPTY');
   }
+
+  await assertActivitiesDescribed(record.id);
 
   const configuredSteps = await repository.countActiveApprovalSteps(assignment.project.id);
 
