@@ -1,3 +1,6 @@
+import type { APPROVER_TYPES } from '../utils/approvals.js';
+import type { ProjectStatus } from '../utils/projects.js';
+
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 type RolesRow = {
@@ -45,6 +48,9 @@ type ProjectsRow = {
   code: string | null;
   start_date: string | null;
   end_date: string | null;
+  status: ProjectStatus;
+  closed_at: string | null;
+  closed_by: number | null;
 };
 
 type ProjectAssignmentsRow = {
@@ -58,7 +64,7 @@ type ProjectAssignmentsRow = {
   is_active: boolean;
 };
 
-export type ApproverType = 'CLIENT_EMAIL' | 'USER' | 'ROLE';
+export type ApproverType = (typeof APPROVER_TYPES)[number];
 
 type ProjectApprovalStepsRow = {
   id: number;
@@ -67,6 +73,8 @@ type ProjectApprovalStepsRow = {
   approver_type: ApproverType;
   user_id: number | null;
   role_id: number | null;
+  approver_email: string | null;
+  approver_name: string | null;
   is_active: boolean;
 };
 
@@ -127,6 +135,8 @@ type TimesheetApprovalsRow = {
   approver_type: ApproverType;
   approver_id: number | null;
   approver_role_code: string | null;
+  approver_email: string | null;
+  approver_name: string | null;
   status: ApprovalStatus;
   resolved_via: string | null;
   review_no: number;
@@ -212,7 +222,10 @@ export type Database = {
       };
       PROJECTS: {
         Row: ProjectsRow;
-        Insert: InsertOf<ProjectsRow, 'manager_id' | 'code' | 'start_date' | 'end_date'>;
+        Insert: InsertOf<
+          ProjectsRow,
+          'manager_id' | 'code' | 'start_date' | 'end_date' | 'status' | 'closed_at' | 'closed_by'
+        >;
         Update: Partial<ProjectsRow>;
         Relationships: [ForeignKey<'client_id', 'CLIENTS'>, ForeignKey<'manager_id', 'USERS'>];
       };
@@ -227,7 +240,10 @@ export type Database = {
       };
       PROJECT_APPROVAL_STEPS: {
         Row: ProjectApprovalStepsRow;
-        Insert: InsertOf<ProjectApprovalStepsRow, 'user_id' | 'role_id' | 'is_active'>;
+        Insert: InsertOf<
+          ProjectApprovalStepsRow,
+          'user_id' | 'role_id' | 'approver_email' | 'approver_name' | 'is_active'
+        >;
         Update: Partial<ProjectApprovalStepsRow>;
         Relationships: [
           ForeignKey<'project_id', 'PROJECTS'>,
@@ -272,6 +288,8 @@ export type Database = {
           | 'cycle_no'
           | 'approver_id'
           | 'approver_role_code'
+          | 'approver_email'
+          | 'approver_name'
           | 'status'
           | 'resolved_via'
           | 'review_no'
@@ -352,6 +370,20 @@ export type Database = {
           p_actor_role_code: string;
         };
         Returns: number;
+      };
+      fn_close_project: {
+        Args: {
+          p_project_id: number;
+          p_effective_date: string;
+          p_actor_id: number;
+        };
+        Returns: Json;
+      };
+      fn_reopen_project: {
+        Args: {
+          p_project_id: number;
+        };
+        Returns: Json;
       };
     };
     Enums: Record<string, never>;

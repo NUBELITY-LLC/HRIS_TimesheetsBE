@@ -81,6 +81,16 @@ La plataforma **no usa Supabase Auth**: las credenciales viven en `public."USERS
 credenciales y emite su propio JWT. Supabase se usa unicamente como base de datos, con la
 service role key, y la autorizacion la resuelve la API — no RLS.
 
+### Roles
+
+| Codigo       | Catalogos (companies/clients/projects) | Usuarios | Manager de proyecto | Aprueba timesheets | Captura timesheets |
+| ------------ | -------------------------------------- | -------- | ------------------- | ------------------ | ------------------ |
+| `ADMIN`      | Si                                     | Si       | Si                  | Si                 | No                 |
+| `MANAGER`    | Si                                     | Si  | Si                  | Si                 | Si                 |
+| `FINANCE`    | No                                     | No       | No                  | Si                 | Si                 |
+| `CONSULTANT` | No                                     | No       | No                  | No                 | Si                 |
+| `EMPLOYEE`   | No                                     | No       | No                  | No                 | Si                 |
+
 ### Endpoints
 
 | Metodo | Ruta                           | Auth       | Descripcion                                       |

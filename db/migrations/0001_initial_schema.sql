@@ -59,12 +59,19 @@ create table if not exists public."PROJECTS" (
   manager_id   bigint       references public."USERS"(id),
   project_name varchar(150) not null,
   code         varchar(40),
+  status       varchar(20)  not null default 'ACTIVE',
   start_date   date,
   end_date     date,
-  constraint "chk_PROJECTS_dates" check (end_date is null or start_date is null or end_date >= start_date)
+  closed_at    timestamp,
+  closed_by    bigint       references public."USERS"(id),
+  constraint "chk_PROJECTS_dates" check (end_date is null or start_date is null or end_date >= start_date),
+  constraint "chk_PROJECTS_status" check (status in ('ACTIVE', 'CLOSED')),
+  constraint "chk_PROJECTS_closed_requires_end_date"
+    check (status <> 'CLOSED' or end_date is not null)
 );
 
 create index if not exists "idx_PROJECTS_manager_id" on public."PROJECTS" (manager_id);
+create index if not exists "idx_PROJECTS_status" on public."PROJECTS" (status);
 create unique index if not exists "idx_PROJECTS_client_id_project_name"
   on public."PROJECTS" (client_id, project_name);
 
@@ -87,25 +94,48 @@ create unique index if not exists "idx_PROJECT_ASSIGNMENTS_project_id_consultant
   on public."PROJECT_ASSIGNMENTS" (project_id, consultant_id, start_date);
 
 create table if not exists public."PROJECT_APPROVAL_STEPS" (
-  id            bigint      generated always as identity primary key,
-  project_id    bigint      not null references public."PROJECTS"(id),
-  seq           smallint    not null,
-  approver_type varchar(20) not null,
-  user_id       bigint      references public."USERS"(id),
-  role_id       bigint      references public."ROLES"(id),
-  is_active     boolean     not null default true,
+  id             bigint      generated always as identity primary key,
+  project_id     bigint      not null references public."PROJECTS"(id),
+  seq            smallint    not null,
+  approver_type  varchar(20) not null,
+  user_id        bigint      references public."USERS"(id),
+  role_id        bigint      references public."ROLES"(id),
+  client_id      bigint      references public."CLIENTS"(id),
+  approver_email varchar(254),
+  approver_name  varchar(150),
+  is_active      boolean     not null default true,
   constraint "chk_PROJECT_APPROVAL_STEPS_seq" check (seq between 1 and 10),
   constraint "chk_PROJECT_APPROVAL_STEPS_approver_type"
     check (approver_type in ('CLIENT_EMAIL', 'USER', 'ROLE')),
   constraint "chk_PROJECT_APPROVAL_STEPS_approver_ref" check (
-    (approver_type = 'USER'         and user_id is not null and role_id is null) or
-    (approver_type = 'ROLE'         and role_id is not null and user_id is null) or
-    (approver_type = 'CLIENT_EMAIL' and user_id is null     and role_id is null)
+    (approver_type = 'USER'
+       and user_id is not null and role_id is null and client_id is null
+       and approver_email is null) or
+    (approver_type = 'ROLE'
+       and role_id is not null and user_id is null and client_id is null
+       and approver_email is null) or
+    (approver_type = 'CLIENT_EMAIL'
+       and client_id is not null and user_id is null and role_id is null
+       and approver_email is not null)
+  ),
+  constraint "chk_PROJECT_APPROVAL_STEPS_approver_email" check (
+    approver_email is null or (
+      approver_email = lower(approver_email) and
+      approver_email ~ '^[^@[:space:]]+@[^@[:space:]]+\.[a-z]{2,}$'
+    )
   )
 );
 
 create unique index if not exists "idx_PROJECT_APPROVAL_STEPS_project_id_seq"
   on public."PROJECT_APPROVAL_STEPS" (project_id, seq);
+create unique index if not exists "idx_PROJECT_APPROVAL_STEPS_project_id_user_id"
+  on public."PROJECT_APPROVAL_STEPS" (project_id, user_id) where user_id is not null;
+create unique index if not exists "idx_PROJECT_APPROVAL_STEPS_project_id_role_id"
+  on public."PROJECT_APPROVAL_STEPS" (project_id, role_id) where role_id is not null;
+create unique index if not exists "idx_PROJECT_APPROVAL_STEPS_project_id_client_id"
+  on public."PROJECT_APPROVAL_STEPS" (project_id, client_id) where client_id is not null;
+create unique index if not exists "idx_PROJECT_APPROVAL_STEPS_project_id_approver_email"
+  on public."PROJECT_APPROVAL_STEPS" (project_id, approver_email) where approver_email is not null;
 
 create table if not exists public."TIMESHEETS" (
   id              bigint        generated always as identity primary key,
@@ -173,6 +203,8 @@ create table if not exists public."TIMESHEET_APPROVALS" (
   approver_type      varchar(20) not null,
   approver_id        bigint      references public."USERS"(id),
   approver_role_code varchar(30),
+  approver_email     varchar(254),
+  approver_name      varchar(150),
   status             varchar(24) not null default 'PENDING',
   resolved_via       varchar(20),
   review_no          smallint    not null default 0,
@@ -425,15 +457,26 @@ as $$
 declare
   v_step    jsonb;
   v_role_id bigint;
+  v_count   integer;
   v_total   integer := 0;
 begin
   if not exists (select 1 from public."PROJECTS" where id = p_project_id) then
     raise exception 'PROJECT_NOT_FOUND';
   end if;
 
+  v_count := jsonb_array_length(coalesce(p_steps, '[]'::jsonb));
+
+  if v_count < 2 then
+    raise exception 'APPROVAL_STEPS_MIN:%', v_count;
+  end if;
+
+  if v_count > 10 then
+    raise exception 'APPROVAL_STEPS_MAX:%', v_count;
+  end if;
+
   delete from public."PROJECT_APPROVAL_STEPS" where project_id = p_project_id;
 
-  for v_step in select * from jsonb_array_elements(coalesce(p_steps, '[]'::jsonb))
+  for v_step in select * from jsonb_array_elements(p_steps)
   loop
     v_role_id := null;
 
@@ -446,13 +489,19 @@ begin
     end if;
 
     insert into public."PROJECT_APPROVAL_STEPS"
-      (project_id, seq, approver_type, user_id, role_id, is_active)
+      (project_id, seq, approver_type, user_id, role_id, client_id,
+       approver_email, approver_name, is_active)
     values (
       p_project_id,
       (v_step ->> 'seq')::smallint,
       v_step ->> 'approverType',
       case when v_step ->> 'approverType' = 'USER' then (v_step ->> 'userId')::bigint end,
       v_role_id,
+      case when v_step ->> 'approverType' = 'CLIENT_EMAIL' then (v_step ->> 'clientId')::bigint end,
+      case
+        when v_step ->> 'approverType' = 'CLIENT_EMAIL' then lower(v_step ->> 'approverEmail')
+      end,
+      nullif(v_step ->> 'approverName', ''),
       true
     );
 
@@ -460,6 +509,112 @@ begin
   end loop;
 
   return v_total;
+end;
+$$;
+
+create or replace function public.fn_close_project(
+  p_project_id      bigint,
+  p_effective_date  date,
+  p_actor_id        bigint
+) returns jsonb
+language plpgsql
+as $$
+declare
+  v_project    public."PROJECTS";
+  v_open       integer;
+  v_stranded   integer;
+  v_closed     integer;
+begin
+  select * into v_project
+    from public."PROJECTS"
+   where id = p_project_id
+     for update;
+
+  if not found then
+    raise exception 'PROJECT_NOT_FOUND';
+  end if;
+
+  if v_project.status = 'CLOSED' then
+    raise exception 'PROJECT_ALREADY_CLOSED:%', v_project.end_date;
+  end if;
+
+  if v_project.start_date is not null and p_effective_date < v_project.start_date then
+    raise exception 'CLOSE_DATE_BEFORE_START:%', v_project.start_date;
+  end if;
+
+  select count(*)
+    into v_open
+    from public."TIMESHEETS" t
+    join public."PROJECT_ASSIGNMENTS" a on a.id = t.assignment_id
+   where a.project_id = p_project_id
+     and t.status in ('SUBMITTED', 'IN_REVIEW')
+     and t.week_start_date > p_effective_date;
+
+  if v_open > 0 then
+    raise exception 'PROJECT_HAS_OPEN_TIMESHEETS:%', v_open;
+  end if;
+
+  select count(*)
+    into v_stranded
+    from public."TIMESHEETS" t
+    join public."PROJECT_ASSIGNMENTS" a on a.id = t.assignment_id
+   where a.project_id = p_project_id
+     and t.status in ('DRAFT', 'REJECTED')
+     and t.week_start_date > p_effective_date;
+
+  update public."PROJECT_ASSIGNMENTS"
+     set end_date  = p_effective_date,
+         is_active = false
+   where project_id = p_project_id
+     and (end_date is null or end_date > p_effective_date);
+
+  get diagnostics v_closed = row_count;
+
+  update public."PROJECTS"
+     set status    = 'CLOSED',
+         end_date  = p_effective_date,
+         closed_at = now(),
+         closed_by = p_actor_id
+   where id = p_project_id;
+
+  return jsonb_build_object(
+    'projectId', p_project_id,
+    'effectiveDate', p_effective_date,
+    'closedAssignments', v_closed,
+    'strandedTimesheets', v_stranded
+  );
+end;
+$$;
+
+create or replace function public.fn_reopen_project(
+  p_project_id bigint
+) returns jsonb
+language plpgsql
+as $$
+declare
+  v_project public."PROJECTS";
+begin
+  select * into v_project
+    from public."PROJECTS"
+   where id = p_project_id
+     for update;
+
+  if not found then
+    raise exception 'PROJECT_NOT_FOUND';
+  end if;
+
+  if v_project.status <> 'CLOSED' then
+    raise exception 'PROJECT_NOT_CLOSED';
+  end if;
+
+  update public."PROJECTS"
+     set status    = 'ACTIVE',
+         end_date  = null,
+         closed_at = null,
+         closed_by = null
+   where id = p_project_id;
+
+  return jsonb_build_object('projectId', p_project_id, 'previousEndDate', v_project.end_date);
 end;
 $$;
 
@@ -548,6 +703,7 @@ declare
   v_project_id  bigint;
   v_cycle_no    smallint;
   v_first_seq   smallint;
+  v_step_count  integer;
   v_code        varchar(30);
   v_from_status varchar(20);
 begin
@@ -573,13 +729,18 @@ begin
     from public."PROJECT_ASSIGNMENTS" a
    where a.id = v_timesheet.assignment_id;
 
-  if not exists (
-    select 1
-      from public."PROJECT_APPROVAL_STEPS" s
-     where s.project_id = v_project_id
-       and s.is_active
-  ) then
+  select count(*)
+    into v_step_count
+    from public."PROJECT_APPROVAL_STEPS" s
+   where s.project_id = v_project_id
+     and s.is_active;
+
+  if v_step_count = 0 then
     raise exception 'NO_APPROVAL_WORKFLOW';
+  end if;
+
+  if v_step_count < 2 then
+    raise exception 'INCOMPLETE_APPROVAL_WORKFLOW:%', v_step_count;
   end if;
 
   v_from_status := v_timesheet.status;
@@ -594,11 +755,11 @@ begin
 
   insert into public."TIMESHEET_APPROVALS" (
     timesheet_id, step_id, seq, cycle_no, approver_type,
-    approver_id, approver_role_code, status
+    approver_id, approver_role_code, approver_email, approver_name, status
   )
   select
     v_timesheet.id, s.id, s.seq, v_cycle_no, s.approver_type,
-    s.user_id, r.code, 'PENDING'
+    s.user_id, r.code, s.approver_email, s.approver_name, 'PENDING'
     from public."PROJECT_APPROVAL_STEPS" s
     left join public."ROLES" r on r.id = s.role_id
    where s.project_id = v_project_id
@@ -637,7 +798,8 @@ begin
       jsonb_build_object(
         'submissionCode', v_code,
         'totalHours', v_timesheet.total_hours,
-        'cycleNo', v_cycle_no
+        'cycleNo', v_cycle_no,
+        'approvalSteps', v_step_count
       )
     ),
     (
@@ -668,26 +830,27 @@ begin
 end;
 $$;
 
-alter table public."ROLES"                enable row level security;
-alter table public."USERS"                enable row level security;
-alter table public."COMPANIES"            enable row level security;
-alter table public."CLIENTS"              enable row level security;
-alter table public."PROJECTS"             enable row level security;
-alter table public."PROJECT_ASSIGNMENTS"  enable row level security;
+alter table public."ROLES"                  enable row level security;
+alter table public."USERS"                  enable row level security;
+alter table public."COMPANIES"              enable row level security;
+alter table public."CLIENTS"                enable row level security;
+alter table public."PROJECTS"               enable row level security;
+alter table public."PROJECT_ASSIGNMENTS"    enable row level security;
 alter table public."PROJECT_APPROVAL_STEPS" enable row level security;
-alter table public."TIMESHEETS"           enable row level security;
-alter table public."TIMESHEET_DAYS"       enable row level security;
-alter table public."TIMESHEET_ACTIVITIES" enable row level security;
-alter table public."TIMESHEET_APPROVALS"  enable row level security;
-alter table public."TIMESHEET_EVENTS"     enable row level security;
-alter table public."APPROVAL_REQUESTS"    enable row level security;
-alter table public."NOTIFICATIONS"        enable row level security;
-alter table public."PAYMENT_BATCHES"      enable row level security;
-alter table public."PAYMENTS"             enable row level security;
+alter table public."TIMESHEETS"             enable row level security;
+alter table public."TIMESHEET_DAYS"         enable row level security;
+alter table public."TIMESHEET_ACTIVITIES"   enable row level security;
+alter table public."TIMESHEET_APPROVALS"    enable row level security;
+alter table public."TIMESHEET_EVENTS"       enable row level security;
+alter table public."APPROVAL_REQUESTS"      enable row level security;
+alter table public."NOTIFICATIONS"          enable row level security;
+alter table public."PAYMENT_BATCHES"        enable row level security;
+alter table public."PAYMENTS"               enable row level security;
 
 insert into public."ROLES" (code, name) values
   ('CONSULTANT', 'Consultant'),
   ('EMPLOYEE',   'Employee'),
   ('MANAGER',    'Manager'),
+  ('FINANCE',    'Finance'),
   ('ADMIN',      'Administrator')
 on conflict (code) do nothing;
