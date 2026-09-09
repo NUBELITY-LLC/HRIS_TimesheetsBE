@@ -32,8 +32,8 @@ const activitySchema = z.object({
   activity: z
     .string({ message: 'La actividad es obligatoria' })
     .trim()
-    .min(1, 'Describe la actividad realizada')
-    .max(255, 'La actividad excede los 255 caracteres'),
+    .max(255, 'La actividad excede los 255 caracteres')
+    .default(''),
 });
 
 const daySchema = z.object({
