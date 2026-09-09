@@ -47,6 +47,12 @@ timesheetsRouter.get(
   asyncHandler(timesheetsController.getOne),
 );
 
+timesheetsRouter.delete(
+  '/:id',
+  validate({ params: timesheetIdParamSchema }),
+  asyncHandler(timesheetsController.discard),
+);
+
 timesheetsRouter.post(
   '/:id/submit',
   validate({ params: timesheetIdParamSchema }),

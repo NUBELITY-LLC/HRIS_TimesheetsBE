@@ -4,6 +4,7 @@ import { buildPagination, created, ok, paginated } from '../../utils/httpRespons
 import { validatedQuery } from '../../middlewares/validate.js';
 import * as projectsService from './projects.service.js';
 import type {
+  CloseProjectInput,
   CreateAssignmentInput,
   CreateProjectInput,
   ListProjectsQuery,
@@ -51,6 +52,21 @@ export async function update(req: Request, res: Response): Promise<void> {
   ok(res, { project });
 }
 
+export async function close(req: Request, res: Response): Promise<void> {
+  const result = await projectsService.closeProject(
+    Number(req.params.id),
+    req.body as CloseProjectInput,
+    requireActor(req),
+  );
+
+  ok(res, result);
+}
+
+export async function reopen(req: Request, res: Response): Promise<void> {
+  const project = await projectsService.reopenProject(Number(req.params.id), requireActor(req));
+  ok(res, { project });
+}
+
 export async function listAssignments(req: Request, res: Response): Promise<void> {
   const assignments = await projectsService.listAssignments(Number(req.params.id));
   ok(res, { assignments });
@@ -88,16 +104,16 @@ export async function unassign(req: Request, res: Response): Promise<void> {
 }
 
 export async function getApprovalSteps(req: Request, res: Response): Promise<void> {
-  const approvalSteps = await projectsService.getApprovalSteps(Number(req.params.id));
-  ok(res, { approvalSteps });
+  const workflow = await projectsService.getApprovalSteps(Number(req.params.id));
+  ok(res, workflow);
 }
 
 export async function replaceApprovalSteps(req: Request, res: Response): Promise<void> {
-  const approvalSteps = await projectsService.replaceApprovalSteps(
+  const workflow = await projectsService.replaceApprovalSteps(
     Number(req.params.id),
     req.body as ReplaceApprovalStepsInput,
     requireActor(req),
   );
 
-  ok(res, { approvalSteps });
+  ok(res, workflow);
 }

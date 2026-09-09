@@ -13,7 +13,12 @@ import type {
   UserPatch,
   UserRecord,
 } from './users.repository.js';
-import { canManageRole, manageableRolesFor } from './users.permissions.js';
+import {
+  canGrantRole,
+  canManageRole,
+  grantableRolesFor,
+  manageableRolesFor,
+} from './users.permissions.js';
 import type {
   CreateUserInput,
   ListUsersQuery,
@@ -110,12 +115,16 @@ function toUserProjectView(record: ConsultantAssignmentRecord): UserProjectView 
   };
 }
 
-function roleNotAllowedError(actorRoleCode: string, targetRoleCode: string): ApiError {
+function roleNotAllowedError(
+  actorRoleCode: string,
+  targetRoleCode: string,
+  allowedRoles: string[] | 'ALL',
+): ApiError {
   return new ApiError(
     403,
     `Tu rol no puede gestionar usuarios con el rol "${targetRoleCode}"`,
     'ROLE_NOT_ALLOWED',
-    { allowedRoles: manageableRolesFor(actorRoleCode) },
+    { allowedRoles },
   );
 }
 
@@ -124,16 +133,16 @@ async function resolveRole(roleCode: string, actor: Actor): Promise<usersReposit
 
   if (!role) {
     throw ApiError.badRequest(`El rol "${roleCode}" no existe`, {
-      allowedRoles: manageableRolesFor(actor.roleCode),
+      allowedRoles: grantableRolesFor(actor.roleCode),
     });
   }
 
-  if (!canManageRole(actor.roleCode, role.code)) {
+  if (!canGrantRole(actor.roleCode, role.code)) {
     logger.warn(
       { actorId: actor.id, actorRole: actor.roleCode, targetRole: role.code },
       'Intento de asignar un rol no permitido',
     );
-    throw roleNotAllowedError(actor.roleCode, role.code);
+    throw roleNotAllowedError(actor.roleCode, role.code, grantableRolesFor(actor.roleCode));
   }
 
   return role;
@@ -153,7 +162,11 @@ async function loadManageableUser(id: number, actor: Actor): Promise<UserRecord>
       { actorId: actor.id, actorRole: actor.roleCode, targetUserId: id },
       'Intento de gestionar un usuario fuera de su alcance',
     );
-    throw roleNotAllowedError(actor.roleCode, view.role.code);
+    throw roleNotAllowedError(
+      actor.roleCode,
+      view.role.code,
+      manageableRolesFor(actor.roleCode),
+    );
   }
 
   return record;

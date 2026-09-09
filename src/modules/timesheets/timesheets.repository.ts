@@ -2,12 +2,20 @@ import { supabase } from '../../config/supabase.js';
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import type { ApproverType, ApprovalStatus, TimesheetStatus } from '../../types/database.types.js';
+import type { ProjectStatus } from '../../utils/projects.js';
 
-export type ClientRef = { id: number; client_name: string };
+export type CompanyRef = { id: number; trade_name: string };
+export type ClientRef = {
+  id: number;
+  client_name: string;
+  company: CompanyRef | null;
+};
 export type ProjectRef = {
   id: number;
   project_name: string;
   code: string | null;
+  end_date: string | null;
+  status: ProjectStatus;
   client: ClientRef | null;
 };
 
@@ -59,6 +67,8 @@ export type ApprovalRecord = {
   approver_type: ApproverType;
   approver_id: number | null;
   approver_role_code: string | null;
+  approver_email: string | null;
+  approver_name: string | null;
   status: ApprovalStatus;
   comments: string | null;
   decided_at: string | null;
@@ -74,7 +84,8 @@ export type ListTimesheetsFilters = {
 
 const ASSIGNMENT_COLUMNS =
   'id, consultant_id, is_active, start_date, end_date, ' +
-  'project:PROJECTS!inner(id, project_name, code, client:CLIENTS!inner(id, client_name))';
+  'project:PROJECTS!inner(id, project_name, code, end_date, status, ' +
+  'client:CLIENTS!inner(id, client_name, company:COMPANIES!inner(id, trade_name)))';
 
 const TIMESHEET_COLUMNS =
   'id, assignment_id, submission_code, current_seq, week_start_date, week_end_date, status, ' +
@@ -82,8 +93,8 @@ const TIMESHEET_COLUMNS =
   `assignment:PROJECT_ASSIGNMENTS!inner(${ASSIGNMENT_COLUMNS})`;
 
 const APPROVAL_COLUMNS =
-  'id, seq, cycle_no, approver_type, approver_id, approver_role_code, status, comments, ' +
-  'decided_at, approver:USERS(id, full_name)';
+  'id, seq, cycle_no, approver_type, approver_id, approver_role_code, approver_email, ' +
+  'approver_name, status, comments, decided_at, approver:USERS(id, full_name)';
 
 const OPEN_STATUSES: TimesheetStatus[] = ['SUBMITTED', 'IN_REVIEW'];
 const SETTLED_STATUSES: TimesheetStatus[] = ['APPROVED', 'CLOSED', 'PAID'];
@@ -227,6 +238,12 @@ export async function findTimesheetsByConsultant(
   if (error) fail('findTimesheetsByConsultant', error);
 
   return { rows: (data ?? []) as unknown as TimesheetRecord[], total: count ?? 0 };
+}
+
+export async function deleteTimesheet(id: number): Promise<void> {
+  const { error } = await supabase.from('TIMESHEETS').delete().eq('id', id);
+
+  if (error) fail('deleteTimesheet', error);
 }
 
 export async function sumHoursInRange(

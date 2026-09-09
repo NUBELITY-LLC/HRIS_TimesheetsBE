@@ -49,6 +49,11 @@ export async function submit(req: Request, res: Response): Promise<void> {
   ok(res, result);
 }
 
+export async function discard(req: Request, res: Response): Promise<void> {
+  await timesheetsService.discardDraft(Number(req.params.id), requireActor(req));
+  ok(res, { discarded: true });
+}
+
 export async function listMine(req: Request, res: Response): Promise<void> {
   const query = validatedQuery<ListTimesheetsQuery>(res);
   const { timesheets, total } = await timesheetsService.listMyTimesheets(query, requireActor(req));

@@ -6,6 +6,7 @@ import { CATALOG_MANAGER_ROLES } from '../../utils/roles.js';
 import * as projectsController from './projects.controller.js';
 import {
   assignmentParamsSchema,
+  closeProjectSchema,
   createAssignmentSchema,
   createProjectSchema,
   listProjectsQuerySchema,
@@ -41,6 +42,18 @@ projectsRouter.patch(
   '/:id',
   validate({ params: projectIdParamSchema, body: updateProjectSchema }),
   asyncHandler(projectsController.update),
+);
+
+projectsRouter.post(
+  '/:id/close',
+  validate({ params: projectIdParamSchema, body: closeProjectSchema }),
+  asyncHandler(projectsController.close),
+);
+
+projectsRouter.post(
+  '/:id/reopen',
+  validate({ params: projectIdParamSchema }),
+  asyncHandler(projectsController.reopen),
 );
 
 projectsRouter.get(

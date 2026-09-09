@@ -1,7 +1,9 @@
 import { supabase } from '../../config/supabase.js';
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
+import { MAX_APPROVAL_STEPS, MIN_APPROVAL_STEPS } from '../../utils/approvals.js';
 import type { ApproverType } from '../../types/database.types.js';
+import type { ProjectStatus } from '../../utils/projects.js';
 
 export type ClientRef = { id: number; client_name: string; is_active: boolean };
 export type UserRef = {
@@ -20,6 +22,8 @@ export type ProjectRecord = {
   code: string | null;
   start_date: string | null;
   end_date: string | null;
+  status: ProjectStatus;
+  closed_at: string | null;
   client: ClientRef | null;
   manager: UserRef | null;
 };
@@ -51,6 +55,7 @@ export type ConsultantAssignmentRecord = {
     code: string | null;
     start_date: string | null;
     end_date: string | null;
+    status: ProjectStatus;
     client: ClientRef | null;
   } | null;
 };
@@ -61,9 +66,13 @@ export type ApprovalStepRecord = {
   approver_type: ApproverType;
   user_id: number | null;
   role_id: number | null;
+  client_id: number | null;
+  approver_email: string | null;
+  approver_name: string | null;
   is_active: boolean;
   user: { id: number; full_name: string; email: string } | null;
   role: { id: number; code: string; name: string } | null;
+  client: { id: number; client_name: string; contact_email: string | null } | null;
 };
 
 export type NewProjectRow = {
@@ -97,6 +106,7 @@ export type ListProjectsFilters = {
   search?: string;
   clientId?: number;
   managerId?: number;
+  status?: ProjectStatus;
   sortColumn: SortColumn;
   ascending: boolean;
 };
@@ -104,9 +114,9 @@ export type ListProjectsFilters = {
 const USER_REF_COLUMNS = 'id, full_name, email, is_active, role:ROLES!inner(id, code, name)';
 
 const PROJECT_COLUMNS =
-  'id, client_id, manager_id, project_name, code, start_date, end_date, ' +
+  'id, client_id, manager_id, project_name, code, start_date, end_date, status, closed_at, ' +
   'client:CLIENTS!inner(id, client_name, is_active), ' +
-  `manager:USERS(${USER_REF_COLUMNS})`;
+  `manager:USERS!PROJECTS_manager_id_fkey(${USER_REF_COLUMNS})`;
 
 const ASSIGNMENT_COLUMNS =
   'id, project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active, ' +
@@ -114,12 +124,13 @@ const ASSIGNMENT_COLUMNS =
 
 const CONSULTANT_ASSIGNMENT_COLUMNS =
   'id, project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active, ' +
-  'project:PROJECTS!inner(id, project_name, code, start_date, end_date, ' +
+  'project:PROJECTS!inner(id, project_name, code, start_date, end_date, status, ' +
   'client:CLIENTS!inner(id, client_name, is_active))';
 
 const APPROVAL_STEP_COLUMNS =
-  'id, seq, approver_type, user_id, role_id, is_active, ' +
-  'user:USERS(id, full_name, email), role:ROLES(id, code, name)';
+  'id, seq, approver_type, user_id, role_id, client_id, approver_email, approver_name, ' +
+  'is_active, user:USERS(id, full_name, email), role:ROLES(id, code, name), ' +
+  'client:CLIENTS(id, client_name, contact_email)';
 
 const UNIQUE_VIOLATION = '23505';
 const FOREIGN_KEY_VIOLATION = '23503';
@@ -187,6 +198,9 @@ export async function findProjects(
   if (filters.managerId !== undefined) {
     query = query.eq('manager_id', filters.managerId);
   }
+  if (filters.status !== undefined) {
+    query = query.eq('status', filters.status);
+  }
   if (filters.search) {
     const pattern = quoteFilterValue(`%${escapeLikePattern(filters.search)}%`);
     query = query.or(`project_name.ilike.${pattern},code.ilike.${pattern}`);
@@ -218,6 +232,68 @@ export async function updateProject(id: number, patch: ProjectPatch): Promise<Pr
   }
 
   return (data as unknown as ProjectRecord | null) ?? null;
+}
+
+export type CloseProjectResult = {
+  projectId: number;
+  effectiveDate: string;
+  closedAssignments: number;
+  strandedTimesheets: number;
+};
+
+export async function closeProject(
+  projectId: number,
+  effectiveDate: string,
+  actorId: number,
+): Promise<CloseProjectResult> {
+  const { data, error } = await supabase.rpc('fn_close_project', {
+    p_project_id: projectId,
+    p_effective_date: effectiveDate,
+    p_actor_id: actorId,
+  });
+
+  if (error) {
+    if (error.message.startsWith('PROJECT_NOT_FOUND')) {
+      throw ApiError.notFound('El proyecto no existe');
+    }
+    if (error.message.startsWith('PROJECT_ALREADY_CLOSED')) {
+      throw ApiError.conflict(
+        `El proyecto ya esta cerrado desde el ${error.message.split(':')[1] ?? 'n/d'}`,
+      );
+    }
+    if (error.message.startsWith('CLOSE_DATE_BEFORE_START')) {
+      throw ApiError.unprocessable('La fecha de cierre es anterior al inicio del proyecto', {
+        field: 'effectiveDate',
+        projectStartDate: error.message.split(':')[1] ?? null,
+      });
+    }
+    if (error.message.startsWith('PROJECT_HAS_OPEN_TIMESHEETS')) {
+      throw ApiError.unprocessable(
+        'Hay timesheets en aprobacion de semanas posteriores a la fecha de cierre; resuelvelos primero',
+        {
+          code: 'PROJECT_HAS_OPEN_TIMESHEETS',
+          openTimesheets: Number(error.message.split(':')[1] ?? 0),
+        },
+      );
+    }
+    fail('closeProject', error);
+  }
+
+  return data as unknown as CloseProjectResult;
+}
+
+export async function reopenProject(projectId: number): Promise<void> {
+  const { error } = await supabase.rpc('fn_reopen_project', { p_project_id: projectId });
+
+  if (error) {
+    if (error.message.startsWith('PROJECT_NOT_FOUND')) {
+      throw ApiError.notFound('El proyecto no existe');
+    }
+    if (error.message.startsWith('PROJECT_NOT_CLOSED')) {
+      throw ApiError.conflict('El proyecto no esta cerrado');
+    }
+    fail('reopenProject', error);
+  }
 }
 
 export async function findUserById(id: number): Promise<UserRef | null> {
@@ -323,6 +399,9 @@ export type ApprovalStepPayload = {
   approverType: ApproverType;
   userId: number | null;
   roleCode: string | null;
+  clientId: number | null;
+  approverEmail: string | null;
+  approverName: string | null;
 };
 
 export async function replaceApprovalSteps(
@@ -343,6 +422,21 @@ export async function replaceApprovalSteps(
     }
     if (error.message.startsWith('ROLE_NOT_FOUND')) {
       throw ApiError.badRequest('Alguno de los roles indicados no existe');
+    }
+    if (error.message.startsWith('APPROVAL_STEPS_MIN')) {
+      throw ApiError.unprocessable(
+        `El flujo requiere al menos ${MIN_APPROVAL_STEPS} aprobadores`,
+        { field: 'steps', min: MIN_APPROVAL_STEPS, max: MAX_APPROVAL_STEPS },
+      );
+    }
+    if (error.message.startsWith('APPROVAL_STEPS_MAX')) {
+      throw ApiError.unprocessable(
+        `El flujo admite como maximo ${MAX_APPROVAL_STEPS} aprobadores`,
+        { field: 'steps', min: MIN_APPROVAL_STEPS, max: MAX_APPROVAL_STEPS },
+      );
+    }
+    if (error.code === UNIQUE_VIOLATION) {
+      throw ApiError.conflict('Un mismo aprobador no puede ocupar dos carriles del proyecto');
     }
     fail('replaceApprovalSteps', error);
   }

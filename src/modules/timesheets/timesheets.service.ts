@@ -1,5 +1,7 @@
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
+import { MIN_APPROVAL_STEPS } from '../../utils/approvals.js';
+import type { ProjectStatus } from '../../utils/projects.js';
 import * as repository from './timesheets.repository.js';
 import { TimesheetRpcError } from './timesheets.repository.js';
 import {
@@ -26,13 +28,21 @@ export type AssignmentView = {
   startDate: string;
   endDate: string | null;
   client: { id: number; name: string };
-  project: { id: number; name: string; code: string | null };
+  company: { id: number; name: string } | null;
+  project: {
+    id: number;
+    name: string;
+    code: string | null;
+    endDate: string | null;
+    status: ProjectStatus;
+  };
 };
 
 export type ApprovalStepView = {
   seq: number;
   approverType: string;
   approverName: string | null;
+  approverEmail: string | null;
   approverRoleCode: string | null;
   status: string;
   decidedAt: string | null;
@@ -101,7 +111,16 @@ function toAssignmentView(record: repository.AssignmentRecord): AssignmentView |
     startDate: record.start_date,
     endDate: record.end_date,
     client: { id: client.id, name: client.client_name },
-    project: { id: project.id, name: project.project_name, code: project.code },
+    company: client.company
+      ? { id: client.company.id, name: client.company.trade_name }
+      : null,
+    project: {
+      id: project.id,
+      name: project.project_name,
+      code: project.code,
+      endDate: project.end_date,
+      status: project.status,
+    },
   };
 }
 
@@ -109,7 +128,8 @@ function toApprovalView(record: repository.ApprovalRecord): ApprovalStepView {
   return {
     seq: record.seq,
     approverType: record.approver_type,
-    approverName: record.approver?.full_name ?? null,
+    approverName: record.approver?.full_name ?? record.approver_name,
+    approverEmail: record.approver_email,
     approverRoleCode: record.approver_role_code,
     status: record.status,
     decidedAt: record.decided_at,
@@ -192,6 +212,10 @@ async function loadOwnAssignment(
   return assignment;
 }
 
+function projectCaptureEnd(assignment: repository.AssignmentRecord): string | null {
+  return assignment.project?.end_date ?? null;
+}
+
 function assertWeekInAssignment(
   assignment: repository.AssignmentRecord,
   weekStart: string,
@@ -207,6 +231,15 @@ function assertWeekInAssignment(
   if (assignment.end_date && weekStart > assignment.end_date) {
     throw ApiError.unprocessable('La semana es posterior al fin de tu asignacion', {
       assignmentEndDate: assignment.end_date,
+    });
+  }
+
+  const projectEnd = projectCaptureEnd(assignment);
+
+  if (projectEnd && weekStart > projectEnd) {
+    throw ApiError.unprocessable('La semana es posterior al cierre del proyecto', {
+      code: 'PROJECT_CLOSED',
+      projectEndDate: projectEnd,
     });
   }
 }
@@ -256,6 +289,7 @@ function buildDraftPayload(
 ): repository.DraftDayPayload[] {
   const issues: Array<{ path: string; message: string }> = [];
   const days: repository.DraftDayPayload[] = [];
+  const projectEnd = projectCaptureEnd(assignment);
 
   input.days.forEach((day, index) => {
     if (!isWithinWeek(day.date, input.weekStart)) {
@@ -278,6 +312,14 @@ function buildDraftPayload(
       issues.push({
         path: `days.${index}.date`,
         message: `El dia ${day.date} es posterior al fin de tu asignacion`,
+      });
+      return;
+    }
+
+    if (projectEnd && day.date > projectEnd) {
+      issues.push({
+        path: `days.${index}.date`,
+        message: `El dia ${day.date} es posterior al cierre del proyecto`,
       });
       return;
     }
@@ -339,6 +381,13 @@ function translateRpcFailure(error: TimesheetRpcError): ApiError {
         422,
         'El proyecto no tiene un flujo de aprobacion configurado; contacta a tu manager',
         'NO_APPROVAL_WORKFLOW',
+      );
+    case 'INCOMPLETE_APPROVAL_WORKFLOW':
+      return new ApiError(
+        422,
+        `El proyecto necesita al menos ${MIN_APPROVAL_STEPS} aprobadores; contacta a tu manager`,
+        'INCOMPLETE_APPROVAL_WORKFLOW',
+        { steps: Number(error.failure.detail), minApprovers: MIN_APPROVAL_STEPS },
       );
     case 'TIMESHEET_NOT_FOUND':
       return ApiError.notFound('El timesheet no existe');
@@ -429,11 +478,22 @@ export async function submitTimesheet(
     throw new ApiError(422, 'Registra al menos una actividad antes de enviar', 'TIMESHEET_EMPTY');
   }
 
-  if (!(await repository.countActiveApprovalSteps(assignment.project.id))) {
+  const configuredSteps = await repository.countActiveApprovalSteps(assignment.project.id);
+
+  if (!configuredSteps) {
     throw new ApiError(
       422,
       'El proyecto no tiene un flujo de aprobacion configurado; contacta a tu manager',
       'NO_APPROVAL_WORKFLOW',
+    );
+  }
+
+  if (configuredSteps < MIN_APPROVAL_STEPS) {
+    throw new ApiError(
+      422,
+      `El proyecto necesita al menos ${MIN_APPROVAL_STEPS} aprobadores; contacta a tu manager`,
+      'INCOMPLETE_APPROVAL_WORKFLOW',
+      { steps: configuredSteps, minApprovers: MIN_APPROVAL_STEPS },
     );
   }
 
@@ -473,6 +533,29 @@ export async function submitTimesheet(
       steps,
     },
   };
+}
+
+export async function discardDraft(id: number, actor: Actor): Promise<void> {
+  const record = await repository.findTimesheetById(id);
+
+  if (!record) {
+    throw ApiError.notFound('El timesheet no existe');
+  }
+
+  assertTimesheetOwnership(record, actor);
+
+  if (record.status !== 'DRAFT') {
+    throw ApiError.unprocessable('Solo se descartan timesheets en borrador', {
+      status: record.status,
+    });
+  }
+
+  await repository.deleteTimesheet(id);
+
+  logger.info(
+    { timesheetId: id, actorId: actor.id, weekStart: record.week_start_date },
+    'Borrador de timesheet descartado',
+  );
 }
 
 export async function listMyTimesheets(

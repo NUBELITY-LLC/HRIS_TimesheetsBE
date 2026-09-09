@@ -1,5 +1,7 @@
 import { z } from 'zod';
+import { APPROVER_TYPES, MAX_APPROVAL_STEPS, MIN_APPROVAL_STEPS } from '../../utils/approvals.js';
 import { APPROVER_ROLES } from '../../utils/roles.js';
+import { PROJECT_STATUSES } from '../../utils/projects.js';
 
 const positiveId = z.coerce
   .number({ message: 'El id debe ser numerico' })
@@ -92,8 +94,13 @@ export const listProjectsQuerySchema = z.object({
     .transform((value) => value || undefined),
   clientId: positiveId.optional(),
   managerId: positiveId.optional(),
+  status: z.enum(PROJECT_STATUSES).optional(),
   sortBy: z.enum(['id', 'projectName', 'startDate']).default('projectName'),
   sortDir: z.enum(['asc', 'desc']).default('asc'),
+});
+
+export const closeProjectSchema = z.object({
+  effectiveDate: isoDate,
 });
 
 export const createAssignmentSchema = z
@@ -119,50 +126,57 @@ export const updateAssignmentSchema = z
   })
   .refine(endsAfterStart, DATE_ORDER_ISSUE);
 
-const approvalStepSchema = z
-  .object({
-    approverType: z.enum(['CLIENT_EMAIL', 'USER', 'ROLE'], {
-      message: 'El tipo de aprobador debe ser CLIENT_EMAIL, USER o ROLE',
-    }),
-    userId: positiveId.nullish(),
-    roleCode: z
-      .string()
-      .trim()
-      .max(30, 'El rol excede los 30 caracteres')
-      .transform((value) => value.toUpperCase())
-      .nullish(),
-  })
-  .refine((step) => step.approverType !== 'USER' || step.userId != null, {
-    message: 'Un paso de tipo USER requiere `userId`',
-    path: ['userId'],
-  })
-  .refine((step) => step.approverType !== 'ROLE' || Boolean(step.roleCode), {
-    message: 'Un paso de tipo ROLE requiere `roleCode`',
-    path: ['roleCode'],
-  })
-  .refine((step) => step.approverType === 'USER' || step.userId == null, {
-    message: 'Solo un paso de tipo USER admite `userId`',
-    path: ['userId'],
-  })
-  .refine((step) => step.approverType === 'ROLE' || !step.roleCode, {
-    message: 'Solo un paso de tipo ROLE admite `roleCode`',
-    path: ['roleCode'],
-  })
-  .refine((step) => step.approverType !== 'ROLE' || APPROVER_ROLES.includes(step.roleCode ?? ''), {
-    message: `Un paso por rol solo admite ${APPROVER_ROLES.join(' o ')}`,
-    path: ['roleCode'],
-  });
+const approverName = z
+  .string()
+  .trim()
+  .max(150, 'El nombre del aprobador excede los 150 caracteres')
+  .transform((value) => value || null);
+
+const approvalStepSchema = z.discriminatedUnion(
+  'approverType',
+  [
+    z
+      .object({
+        approverType: z.literal('USER'),
+        userId: positiveId,
+        approverName: approverName.nullish(),
+      })
+      .strict(),
+    z
+      .object({
+        approverType: z.literal('ROLE'),
+        roleCode: z
+          .string({ message: 'Un paso de tipo ROLE requiere `roleCode`' })
+          .trim()
+          .max(30, 'El rol excede los 30 caracteres')
+          .transform((value) => value.toUpperCase())
+          .refine((value) => APPROVER_ROLES.includes(value), {
+            message: `Un paso por rol solo admite ${APPROVER_ROLES.join(' o ')}`,
+          }),
+        approverName: approverName.nullish(),
+      })
+      .strict(),
+    z
+      .object({
+        approverType: z.literal('CLIENT_EMAIL'),
+        clientId: positiveId,
+      })
+      .strict(),
+  ],
+  { message: `El tipo de aprobador debe ser ${APPROVER_TYPES.join(', ')}` },
+);
 
 export const replaceApprovalStepsSchema = z.object({
   steps: z
     .array(approvalStepSchema)
-    .min(1, 'Define al menos un paso de aprobacion')
-    .max(10, 'El flujo admite como maximo 10 pasos'),
+    .min(MIN_APPROVAL_STEPS, `El flujo requiere al menos ${MIN_APPROVAL_STEPS} aprobadores`)
+    .max(MAX_APPROVAL_STEPS, `El flujo admite como maximo ${MAX_APPROVAL_STEPS} aprobadores`),
 });
 
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export type ListProjectsQuery = z.infer<typeof listProjectsQuerySchema>;
+export type CloseProjectInput = z.infer<typeof closeProjectSchema>;
 export type CreateAssignmentInput = z.infer<typeof createAssignmentSchema>;
 export type UpdateAssignmentInput = z.infer<typeof updateAssignmentSchema>;
 export type ReplaceApprovalStepsInput = z.infer<typeof replaceApprovalStepsSchema>;
