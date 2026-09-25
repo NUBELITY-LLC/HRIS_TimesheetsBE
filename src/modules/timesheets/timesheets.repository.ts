@@ -1,7 +1,9 @@
 import { supabase } from '../../config/supabase.js';
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
+import { RAISE_EXCEPTION, RpcError, parseRpcFailure } from '../../utils/rpc.js';
 import type { ApproverType, ApprovalStatus, TimesheetStatus } from '../../types/database.types.js';
+import type { ApprovalRequestMail } from '../notifications/notifications.mailer.js';
 import type { ProjectStatus } from '../../utils/projects.js';
 
 export type CompanyRef = { id: number; trade_name: string };
@@ -25,6 +27,7 @@ export type AssignmentRecord = {
   is_active: boolean;
   start_date: string;
   end_date: string | null;
+  assignment_code: string | null;
   project: ProjectRef | null;
 };
 
@@ -80,10 +83,11 @@ export type ListTimesheetsFilters = {
   page: number;
   pageSize: number;
   status?: TimesheetStatus;
+  excludeStatus?: TimesheetStatus;
 };
 
 const ASSIGNMENT_COLUMNS =
-  'id, consultant_id, is_active, start_date, end_date, ' +
+  'id, consultant_id, is_active, start_date, end_date, assignment_code, ' +
   'project:PROJECTS!inner(id, project_name, code, end_date, status, ' +
   'client:CLIENTS!inner(id, client_name, company:COMPANIES!inner(id, trade_name)))';
 
@@ -228,6 +232,10 @@ export async function findTimesheetsByConsultant(
     query = query.eq('status', filters.status);
   }
 
+  if (filters.excludeStatus) {
+    query = query.neq('status', filters.excludeStatus);
+  }
+
   const from = (filters.page - 1) * filters.pageSize;
 
   const { data, error, count } = await query
@@ -292,38 +300,16 @@ export type DraftDayPayload = {
   activities: Array<{ hours: number; activity: string }>;
 };
 
-export type RpcFailure = { code: string; detail?: string };
-
-function parseRpcFailure(message: string): RpcFailure {
-  const trimmed = message.trim();
-  const separator = trimmed.indexOf(':');
-
-  if (separator === -1) return { code: trimmed };
-
-  return { code: trimmed.slice(0, separator), detail: trimmed.slice(separator + 1).trim() };
-}
-
-export class TimesheetRpcError extends Error {
-  readonly failure: RpcFailure;
-
-  constructor(failure: RpcFailure) {
-    super(failure.code);
-    this.name = 'TimesheetRpcError';
-    this.failure = failure;
-  }
-}
-
-const RAISE_EXCEPTION = 'P0001';
 const CHECK_VIOLATION = '23514';
 
 function throwRpcFailure(operation: string, error: { message: string; code?: string }): never {
   if (error.code === RAISE_EXCEPTION) {
-    throw new TimesheetRpcError(parseRpcFailure(error.message));
+    throw new RpcError(parseRpcFailure(error.message));
   }
 
   if (error.code === CHECK_VIOLATION) {
     logger.warn({ err: error, operation }, 'Un check de la base rechazo el timesheet');
-    throw new TimesheetRpcError({ code: 'INVALID_TIMESHEET_DATA', detail: error.message });
+    throw new RpcError({ code: 'INVALID_TIMESHEET_DATA', detail: error.message });
   }
 
   fail(operation, error);
@@ -349,11 +335,33 @@ export async function saveDraft(params: {
   return Number(data);
 }
 
+export type SubmissionRoute = {
+  approvalId: number;
+  stepId: number | null;
+  seq: number;
+  approverType: ApproverType;
+  approverId: number | null;
+  approverRoleCode: string | null;
+  approverEmail: string | null;
+  approverName: string | null;
+};
+
+export type SubmissionRouting = {
+  timesheetId: number;
+  submissionCode: string;
+  cycleNo: number;
+  currentSeq: number;
+  totalSteps: number;
+  route: SubmissionRoute;
+  notifications: { inApp: number; email: number };
+  emailRequests: ApprovalRequestMail[];
+};
+
 export async function submit(params: {
   timesheetId: number;
   actorId: number;
   actorRoleCode: string;
-}): Promise<number> {
+}): Promise<SubmissionRouting> {
   const { data, error } = await supabase.rpc('fn_submit_timesheet', {
     p_timesheet_id: params.timesheetId,
     p_actor_id: params.actorId,
@@ -362,5 +370,88 @@ export async function submit(params: {
 
   if (error) throwRpcFailure('submit', error);
 
-  return Number(data);
+  if (!data) fail('submit', new Error('fn_submit_timesheet no devolvio el ruteo'));
+
+  return data as unknown as SubmissionRouting;
+}
+
+export type TeamTimesheetRecord = {
+  id: number;
+  submission_code: string | null;
+  assignment_id: number;
+  week_start_date: string;
+  week_end_date: string;
+  status: TimesheetStatus;
+  total_hours: number;
+  cycle_no: number;
+  current_seq: number | null;
+  submitted_at: string | null;
+  updated_at: string;
+  pay_rate: number;
+  currency: string;
+  assignment_code: string | null;
+  consultant_id: number;
+  consultant_name: string;
+  consultant_job_title: string | null;
+  consultant_role_code: string;
+  project_id: number;
+  project_name: string;
+  project_code: string | null;
+  client_id: number;
+  client_name: string;
+  company_id?: number | null;
+  company_name?: string | null;
+};
+
+export async function findTeamTimesheets(params: {
+  actorId: number;
+  roleCode: string;
+  page: number;
+  pageSize: number;
+}): Promise<{ rows: TeamTimesheetRecord[]; total: number }> {
+  const { data, error } = await supabase.rpc('fn_team_timesheets', {
+    p_actor_id: params.actorId,
+    p_role_code: params.roleCode,
+    p_limit: params.pageSize,
+    p_offset: (params.page - 1) * params.pageSize,
+  });
+
+  if (error) fail('findTeamTimesheets', error);
+
+  const payload = (data ?? { total: 0, rows: [] }) as unknown as {
+    total: number;
+    rows: TeamTimesheetRecord[];
+  };
+
+  return { rows: payload.rows ?? [], total: Number(payload.total ?? 0) };
+}
+
+export type TeamSummaryRecord = {
+  monthHours: number;
+  approvedCount: number;
+  openCount: number;
+};
+
+export async function findTeamSummary(params: {
+  actorId: number;
+  roleCode: string;
+  from: string;
+  to: string;
+}): Promise<TeamSummaryRecord> {
+  const { data, error } = await supabase.rpc('fn_team_summary', {
+    p_actor_id: params.actorId,
+    p_role_code: params.roleCode,
+    p_from: params.from,
+    p_to: params.to,
+  });
+
+  if (error) fail('findTeamSummary', error);
+
+  const payload = (data ?? {}) as unknown as Partial<TeamSummaryRecord>;
+
+  return {
+    monthHours: Number(payload.monthHours ?? 0),
+    approvedCount: Number(payload.approvedCount ?? 0),
+    openCount: Number(payload.openCount ?? 0),
+  };
 }

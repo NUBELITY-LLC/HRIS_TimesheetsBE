@@ -15,14 +15,17 @@ export type ClientRecord = {
   company_id: number;
   client_name: string;
   contact_email: string | null;
+  user_id: number | null;
   is_active: boolean;
   company: CompanyRef | null;
+  user: { id: number; full_name: string; email: string } | null;
 };
 
 export type NewClientRow = {
   company_id: number;
   client_name: string;
   contact_email: string | null;
+  user_id: number | null;
   is_active: boolean;
 };
 
@@ -30,6 +33,7 @@ export type ClientPatch = {
   company_id?: number;
   client_name?: string;
   contact_email?: string | null;
+  user_id?: number | null;
   is_active?: boolean;
 };
 
@@ -46,8 +50,9 @@ export type ListClientsFilters = {
 };
 
 const CLIENT_COLUMNS =
-  'id, company_id, client_name, contact_email, is_active, ' +
-  'company:COMPANIES!inner(id, legal_name, trade_name, rfc, is_active)';
+  'id, company_id, client_name, contact_email, user_id, is_active, ' +
+  'company:COMPANIES!inner(id, legal_name, trade_name, rfc, is_active), ' +
+  'user:USERS(id, full_name, email)';
 
 const UNIQUE_VIOLATION = '23505';
 

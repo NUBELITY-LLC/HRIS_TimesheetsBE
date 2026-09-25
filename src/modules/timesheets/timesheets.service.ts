@@ -2,8 +2,10 @@ import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { MIN_APPROVAL_STEPS } from '../../utils/approvals.js';
 import type { ProjectStatus } from '../../utils/projects.js';
+import { RpcError } from '../../utils/rpc.js';
+import { queueNotificationEmails } from '../notifications/notifications.emails.js';
+import { deliverApprovalRequests } from '../notifications/notifications.mailer.js';
 import * as repository from './timesheets.repository.js';
-import { TimesheetRpcError } from './timesheets.repository.js';
 import {
   DAY_MAX_MINUTES,
   currentWeekStartISO,
@@ -27,6 +29,7 @@ export type AssignmentView = {
   id: number;
   startDate: string;
   endDate: string | null;
+  assignmentCode: string | null;
   client: { id: number; name: string };
   company: { id: number; name: string } | null;
   project: {
@@ -52,6 +55,7 @@ export type ApprovalStepView = {
 export type TimesheetView = {
   id: number;
   assignmentId: number;
+  assignmentCode: string | null;
   submissionCode: string | null;
   weekStart: string;
   weekEnd: string;
@@ -64,6 +68,7 @@ export type TimesheetView = {
   updatedAt: string;
   editable: boolean;
   client: { id: number; name: string } | null;
+  company: { id: number; name: string } | null;
   project: { id: number; name: string; code: string | null } | null;
   days?: Array<{
     date: string;
@@ -82,6 +87,7 @@ export type SubmissionConfirmation = {
   cycleNo: number;
   currentStep: ApprovalStepView | null;
   steps: ApprovalStepView[];
+  notifications: { inApp: number; email: number; emailDelivered: number };
 };
 
 export type DashboardSummary = {
@@ -110,6 +116,7 @@ function toAssignmentView(record: repository.AssignmentRecord): AssignmentView |
     id: record.id,
     startDate: record.start_date,
     endDate: record.end_date,
+    assignmentCode: record.assignment_code,
     client: { id: client.id, name: client.client_name },
     company: client.company
       ? { id: client.company.id, name: client.company.trade_name }
@@ -145,6 +152,7 @@ function toTimesheetView(record: repository.TimesheetRecord): TimesheetView {
   return {
     id: record.id,
     assignmentId: record.assignment_id,
+    assignmentCode: record.assignment?.assignment_code ?? null,
     submissionCode: record.submission_code,
     weekStart: record.week_start_date,
     weekEnd: record.week_end_date,
@@ -157,6 +165,9 @@ function toTimesheetView(record: repository.TimesheetRecord): TimesheetView {
     updatedAt: record.updated_at,
     editable: isEditable(record.status),
     client: client ? { id: client.id, name: client.client_name } : null,
+    company: client?.company
+      ? { id: client.company.id, name: client.company.trade_name }
+      : null,
     project: project ? { id: project.id, name: project.project_name, code: project.code } : null,
   };
 }
@@ -354,7 +365,7 @@ function buildDraftPayload(
   return days;
 }
 
-function translateRpcFailure(error: TimesheetRpcError): ApiError {
+function translateRpcFailure(error: RpcError): ApiError {
   switch (error.failure.code) {
     case 'TIMESHEET_LOCKED':
       return new ApiError(
@@ -389,6 +400,13 @@ function translateRpcFailure(error: TimesheetRpcError): ApiError {
         'INCOMPLETE_APPROVAL_WORKFLOW',
         { steps: Number(error.failure.detail), minApprovers: MIN_APPROVAL_STEPS },
       );
+    case 'NO_APPROVER_AVAILABLE':
+      return new ApiError(
+        422,
+        'El primer aprobador del proyecto no tiene a quien notificar; contacta a tu manager',
+        'NO_APPROVER_AVAILABLE',
+        { seq: Number(error.failure.detail) },
+      );
     case 'TIMESHEET_NOT_FOUND':
       return ApiError.notFound('El timesheet no existe');
     case 'INVALID_TIMESHEET_DATA':
@@ -405,7 +423,7 @@ async function runRpc<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof TimesheetRpcError) {
+    if (error instanceof RpcError) {
       throw translateRpcFailure(error);
     }
     throw error;
@@ -519,7 +537,7 @@ export async function submitTimesheet(
     );
   }
 
-  await runRpc(() =>
+  const routing = await runRpc(() =>
     repository.submit({ timesheetId: id, actorId: actor.id, actorRoleCode: actor.roleCode }),
   );
 
@@ -528,6 +546,9 @@ export async function submitTimesheet(
   if (!submitted?.submission_code) {
     throw ApiError.internal('El envio no genero un codigo de confirmacion');
   }
+
+  const delivery = await deliverApprovalRequests(routing.emailRequests);
+  queueNotificationEmails({ timesheetId: id });
 
   const approvals = await repository.findApprovals(id, submitted.cycle_no);
   const steps = approvals.map(toApprovalView);
@@ -539,8 +560,16 @@ export async function submitTimesheet(
       submissionCode: submitted.submission_code,
       cycleNo: submitted.cycle_no,
       steps: steps.length,
+      routedToSeq: routing.currentSeq,
+      approverType: routing.route.approverType,
+      approverId: routing.route.approverId,
+      approverRoleCode: routing.route.approverRoleCode,
+      inAppNotifications: routing.notifications.inApp,
+      emailRequests: routing.notifications.email,
+      emailsDelivered: delivery.delivered,
+      emailsFailed: delivery.failed,
     },
-    'Timesheet enviado a aprobacion',
+    'Timesheet enviado y ruteado al primer aprobador',
   );
 
   return {
@@ -553,6 +582,11 @@ export async function submitTimesheet(
       cycleNo: submitted.cycle_no,
       currentStep: steps.find((step) => step.seq === submitted.current_seq) ?? null,
       steps,
+      notifications: {
+        inApp: routing.notifications.inApp,
+        email: routing.notifications.email,
+        emailDelivered: delivery.delivered,
+      },
     },
   };
 }
@@ -588,7 +622,8 @@ export async function listMyTimesheets(
     consultantId: actor.id,
     page: query.page,
     pageSize: query.pageSize,
-    status: query.status === 'all' ? undefined : query.status,
+    status: query.status === 'all' || query.status === 'sent' ? undefined : query.status,
+    excludeStatus: query.status === 'sent' ? 'DRAFT' : undefined,
   });
 
   const approvals = await repository.findApprovalsForTimesheets(rows.map((row) => row.id));
@@ -626,5 +661,91 @@ export async function getSummary(query: SummaryQuery, actor: Actor): Promise<Das
     monthTargetMinutes: null,
     pendingCount,
     approvedCount,
+  };
+}
+
+export type TeamTimesheetView = TimesheetView & {
+  owner: { fullName: string; jobTitle: string | null; roleCode: string };
+};
+
+export type TeamSummaryView = {
+  monthMinutes: number;
+  pendingReviewCount: number;
+  approvedCount: number;
+};
+
+function toTeamTimesheetView(record: repository.TeamTimesheetRecord): TeamTimesheetView {
+  const totalHours = Number(record.total_hours);
+
+  return {
+    id: record.id,
+    assignmentId: record.assignment_id,
+    assignmentCode: record.assignment_code,
+    submissionCode: record.submission_code,
+    weekStart: record.week_start_date,
+    weekEnd: record.week_end_date,
+    status: record.status,
+    totalMinutes: hoursToMinutes(totalHours),
+    totalHours,
+    cycleNo: record.cycle_no,
+    currentSeq: record.current_seq,
+    submittedAt: record.submitted_at,
+    updatedAt: record.updated_at,
+    editable: false,
+    client: { id: record.client_id, name: record.client_name },
+    company:
+      record.company_id && record.company_name
+        ? { id: record.company_id, name: record.company_name }
+        : null,
+    project: { id: record.project_id, name: record.project_name, code: record.project_code },
+    owner: {
+      fullName: record.consultant_name,
+      jobTitle: record.consultant_job_title,
+      roleCode: record.consultant_role_code,
+    },
+  };
+}
+
+export async function listTeamTimesheets(
+  query: { page: number; pageSize: number },
+  actor: Actor,
+): Promise<{ timesheets: TeamTimesheetView[]; total: number }> {
+  const { rows, total } = await repository.findTeamTimesheets({
+    actorId: actor.id,
+    roleCode: actor.roleCode,
+    page: query.page,
+    pageSize: query.pageSize,
+  });
+
+  const approvals = await repository.findApprovalsForTimesheets(rows.map((row) => row.id));
+
+  return {
+    timesheets: rows.map((row) => ({
+      ...toTeamTimesheetView(row),
+      approvals: approvals
+        .filter((approval) => approval.timesheet_id === row.id && approval.cycle_no === row.cycle_no)
+        .map(toApprovalView),
+    })),
+    total,
+  };
+}
+
+export async function getTeamSummary(
+  query: SummaryQuery,
+  actor: Actor,
+): Promise<TeamSummaryView> {
+  const { from, to } = monthRange(query.month);
+
+  const summary = await repository.findTeamSummary({
+    actorId: actor.id,
+    roleCode: actor.roleCode,
+    from,
+    to,
+  });
+
+  return {
+    monthMinutes: hoursToMinutes(summary.monthHours),
+    pendingReviewCount: summary.openCount,
+    approvedCount: summary.approvedCount,
   };
 }

@@ -4,6 +4,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { MAX_APPROVAL_STEPS, MIN_APPROVAL_STEPS } from '../../utils/approvals.js';
 import type { ApproverType } from '../../types/database.types.js';
 import type { ProjectStatus } from '../../utils/projects.js';
+import type { PayTermsColumns } from '../payroll/pay.schema.js';
 
 export type ClientRef = { id: number; client_name: string; is_active: boolean };
 export type UserRef = {
@@ -37,6 +38,13 @@ export type AssignmentRecord = {
   start_date: string;
   end_date: string | null;
   is_active: boolean;
+  assignment_code: string | null;
+  contract_type: string;
+  country_code: string;
+  hours_divisor: number;
+  daily_hours: number;
+  overtime_multiplier: number;
+  holiday_multiplier: number;
   consultant: UserRef | null;
 };
 
@@ -49,6 +57,13 @@ export type ConsultantAssignmentRecord = {
   start_date: string;
   end_date: string | null;
   is_active: boolean;
+  assignment_code: string | null;
+  contract_type: string;
+  country_code: string;
+  hours_divisor: number;
+  daily_hours: number;
+  overtime_multiplier: number;
+  holiday_multiplier: number;
   project: {
     id: number;
     project_name: string;
@@ -94,7 +109,8 @@ export type NewAssignmentRow = {
   start_date: string;
   end_date: string | null;
   is_active: boolean;
-};
+  assignment_code: string | null;
+} & PayTermsColumns;
 
 export type AssignmentPatch = Partial<Omit<NewAssignmentRow, 'project_id' | 'consultant_id'>>;
 
@@ -118,12 +134,20 @@ const PROJECT_COLUMNS =
   'client:CLIENTS!inner(id, client_name, is_active), ' +
   `manager:USERS!PROJECTS_manager_id_fkey(${USER_REF_COLUMNS})`;
 
+const PAY_TERMS_SELECT =
+  'contract_type, country_code, hours_divisor, daily_hours, overtime_multiplier, ' +
+  'holiday_multiplier, ';
+
 const ASSIGNMENT_COLUMNS =
   'id, project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active, ' +
+  'assignment_code, ' +
+  PAY_TERMS_SELECT +
   `consultant:USERS!inner(${USER_REF_COLUMNS})`;
 
 const CONSULTANT_ASSIGNMENT_COLUMNS =
   'id, project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active, ' +
+  'assignment_code, ' +
+  PAY_TERMS_SELECT +
   'project:PROJECTS!inner(id, project_name, code, start_date, end_date, status, ' +
   'client:CLIENTS!inner(id, client_name, is_active))';
 
@@ -306,6 +330,18 @@ export async function findUserById(id: number): Promise<UserRef | null> {
   if (error) fail('findUserById', error);
 
   return (data as unknown as UserRef | null) ?? null;
+}
+
+export async function userHasPermission(userId: number, permissionCode: string): Promise<boolean> {
+  const { count, error } = await supabase
+    .from('USER_PERMISSIONS')
+    .select('user_id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('permission_code', permissionCode);
+
+  if (error) fail('userHasPermission', error);
+
+  return (count ?? 0) > 0;
 }
 
 export async function insertAssignment(row: NewAssignmentRow): Promise<AssignmentRecord> {

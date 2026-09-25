@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { passwordSchema } from '../../utils/password.js';
+import { PERMISSION_CODES } from '../../utils/permissions.js';
 import { ASSIGNABLE_ROLES, ROLE_CONSULTANT } from '../../utils/roles.js';
 
 const fullName = z
@@ -13,7 +14,8 @@ const userName = z
   .trim()
   .min(3, 'El usuario debe tener al menos 3 caracteres')
   .max(50, 'El usuario excede los 50 caracteres')
-  .regex(/^[a-zA-Z0-9._-]+$/, 'El usuario solo admite letras, numeros, punto, guion y guion bajo');
+  .regex(/^[a-zA-Z0-9._-]+$/, 'El usuario solo admite letras, numeros, punto, guion y guion bajo')
+  .transform((value) => value.toLowerCase());
 
 const email = z
   .email({ message: 'El correo no es valido' })
@@ -29,6 +31,10 @@ const roleCode = z
   .max(30, 'El rol excede los 30 caracteres')
   .transform((value) => value.toUpperCase());
 
+const permissions = z
+  .array(z.enum(PERMISSION_CODES, { message: 'El permiso indicado no existe' }))
+  .max(PERMISSION_CODES.length, 'Hay permisos repetidos');
+
 const jobTitle = z.string().trim().max(100, 'El puesto excede los 100 caracteres');
 
 const positiveId = z.coerce
@@ -40,6 +46,12 @@ const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'La fecha debe tener el formato YYYY-MM-DD')
   .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)), 'La fecha no es valida');
+
+const assignmentCode = z
+  .string()
+  .trim()
+  .max(50, 'El ID de asignacion excede los 50 caracteres')
+  .transform((value) => value || null);
 
 const payRate = z
   .number({ message: 'La tarifa es obligatoria' })
@@ -56,6 +68,7 @@ export const userProjectSchema = z
     payRate,
     startDate: isoDate,
     endDate: isoDate.nullish(),
+    assignmentCode: assignmentCode.nullish(),
   })
   .refine((value) => !value.endDate || value.endDate >= value.startDate, {
     message: 'La fecha de fin no puede ser anterior a la de inicio',
@@ -68,6 +81,7 @@ export const updateUserProjectSchema = z
     startDate: isoDate.optional(),
     endDate: isoDate.nullish(),
     isActive: z.boolean().optional(),
+    assignmentCode: assignmentCode.nullish(),
   })
   .refine((value) => Object.values(value).some((field) => field !== undefined), {
     message: 'Envia al menos un campo para actualizar',
@@ -84,6 +98,7 @@ export const createUserSchema = z
     email,
     password,
     roleCode,
+    permissions: permissions.optional(),
     jobTitle: jobTitle.optional(),
     isActive: z.boolean().optional(),
     projects: z
@@ -131,6 +146,7 @@ export const updateUserSchema = z
     email: email.optional(),
     password: password.optional(),
     roleCode: roleCode.optional(),
+    permissions: permissions.optional(),
     jobTitle: jobTitle.nullable().optional(),
     isActive: z.boolean().optional(),
   })
@@ -169,6 +185,7 @@ export const listUsersQuerySchema = z.object({
     .max(30, 'El rol excede los 30 caracteres')
     .optional()
     .transform((value) => (value ? value.toUpperCase() : undefined)),
+  permission: z.enum(PERMISSION_CODES, { message: 'El permiso indicado no existe' }).optional(),
   status: z.enum(['active', 'inactive', 'all']).default('active'),
   sortBy: z.enum(['id', 'fullName', 'userName', 'email', 'lastLoginAt']).default('fullName'),
   sortDir: z.enum(['asc', 'desc']).default('asc'),

@@ -7,6 +7,7 @@ declare global {
       roleId: number;
       roleCode: string;
       mustChangePassword: boolean;
+      permissions?: string[];
     }
 
     interface Request {

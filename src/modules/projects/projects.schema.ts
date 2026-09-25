@@ -27,6 +27,12 @@ const currency = z
   .length(3, 'La moneda debe tener 3 letras (ISO 4217)')
   .transform((value) => value.toUpperCase());
 
+const assignmentCode = z
+  .string()
+  .trim()
+  .max(50, 'El ID de asignacion excede los 50 caracteres')
+  .transform((value) => value || null);
+
 const payRate = z
   .number({ message: 'La tarifa es obligatoria' })
   .nonnegative('La tarifa no puede ser negativa')
@@ -110,6 +116,7 @@ export const createAssignmentSchema = z
     currency: currency.optional(),
     startDate: isoDate,
     endDate: isoDate.nullish(),
+    assignmentCode: assignmentCode.nullish(),
   })
   .refine(endsAfterStart, DATE_ORDER_ISSUE);
 
@@ -120,6 +127,7 @@ export const updateAssignmentSchema = z
     startDate: isoDate.optional(),
     endDate: isoDate.nullish(),
     isActive: z.boolean().optional(),
+    assignmentCode: assignmentCode.nullish(),
   })
   .refine((value) => Object.values(value).some((field) => field !== undefined), {
     message: 'Envia al menos un campo para actualizar',

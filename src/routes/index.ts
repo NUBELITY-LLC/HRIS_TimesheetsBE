@@ -1,9 +1,15 @@
 import { Router } from 'express';
+import { approvalsRouter } from '../modules/approvals/approvals.routes.js';
 import { authRouter } from '../modules/auth/auth.routes.js';
 import { clientsRouter } from '../modules/clients/clients.routes.js';
 import { companiesRouter } from '../modules/companies/companies.routes.js';
 import { healthRouter } from '../modules/health/health.routes.js';
+import { holidaysRouter } from '../modules/holidays/holidays.routes.js';
+import { jobsRouter } from '../modules/jobs/jobs.routes.js';
+import { notificationsRouter } from '../modules/notifications/notifications.routes.js';
+import { payrollRouter } from '../modules/payroll/pay.routes.js';
 import { projectsRouter } from '../modules/projects/projects.routes.js';
+import { reportsRouter } from '../modules/reports/reports.routes.js';
 import { timesheetsRouter } from '../modules/timesheets/timesheets.routes.js';
 import { usersRouter } from '../modules/users/users.routes.js';
 
@@ -15,4 +21,10 @@ apiRouter.use('/users', usersRouter);
 apiRouter.use('/companies', companiesRouter);
 apiRouter.use('/clients', clientsRouter);
 apiRouter.use('/projects', projectsRouter);
+apiRouter.use('/holidays', holidaysRouter);
+apiRouter.use('/payroll', payrollRouter);
 apiRouter.use('/timesheets', timesheetsRouter);
+apiRouter.use('/approvals', approvalsRouter);
+apiRouter.use('/notifications', notificationsRouter);
+apiRouter.use('/reports', reportsRouter);
+apiRouter.use('/jobs', jobsRouter);

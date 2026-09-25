@@ -1,7 +1,11 @@
 import { logger } from '../../config/logger.js';
+import { RpcError } from '../../utils/rpc.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { hashPassword } from '../../utils/password.js';
+import { PERMISSION_CODES } from '../../utils/permissions.js';
 import { ASSIGNABLE_ROLES } from '../../utils/roles.js';
+import { queueNotificationEmails } from '../notifications/notifications.emails.js';
+import { toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
 import * as projectsRepository from '../projects/projects.repository.js';
 import type { ConsultantAssignmentRecord } from '../projects/projects.repository.js';
 import * as projectsService from '../projects/projects.service.js';
@@ -18,6 +22,7 @@ import {
   canManageRole,
   grantableRolesFor,
   manageableRolesFor,
+  resolvePermissions,
 } from './users.permissions.js';
 import type {
   CreateUserInput,
@@ -40,9 +45,10 @@ export type UserView = {
   mustChangePassword: boolean;
   lastLoginAt: string | null;
   role: { id: number; code: string; name: string };
+  permissions: string[];
 };
 
-export type Actor = { id: number; roleCode: string };
+export type Actor = { id: number; roleCode: string; permissions: string[] };
 
 export type UserProjectView = {
   assignmentId: number;
@@ -51,6 +57,8 @@ export type UserProjectView = {
   startDate: string;
   endDate: string | null;
   isActive: boolean;
+  assignmentCode: string | null;
+  payTerms: PayTermsView;
   project: {
     id: number;
     projectName: string;
@@ -85,7 +93,57 @@ function toUserView(record: UserRecord): UserView {
     mustChangePassword: record.must_change_password,
     lastLoginAt: record.last_login_at,
     role: record.role,
+    permissions: permissionCodesOf(record),
   };
+}
+
+function permissionCodesOf(record: UserRecord): string[] {
+  const granted = new Set((record.permissions ?? []).map((row) => row.permission_code));
+  return PERMISSION_CODES.filter((code) => granted.has(code));
+}
+
+function sameCodes(left: readonly string[], right: readonly string[]): boolean {
+  const a = new Set(left);
+  const b = new Set(right);
+  return a.size === b.size && [...a].every((code) => b.has(code));
+}
+
+function permissionsFor(
+  roleCode: string,
+  requested: string[] | undefined,
+  actor: Actor,
+  current: string[] = [],
+): string[] {
+  const resolution = resolvePermissions({
+    roleCode,
+    requested,
+    actorRoleCode: actor.roleCode,
+    actorPermissions: actor.permissions,
+    current,
+  });
+
+  if (resolution.ok) return resolution.permissions;
+
+  logger.warn(
+    { actorId: actor.id, roleCode, rejected: resolution.rejected, reason: resolution.code },
+    'Intento de otorgar permisos no permitidos',
+  );
+
+  if (resolution.code === 'PERMISSION_NOT_ALLOWED_FOR_ROLE') {
+    throw new ApiError(
+      422,
+      'Algunos permisos no aplican para el rol seleccionado',
+      'PERMISSION_NOT_ALLOWED_FOR_ROLE',
+      { field: 'permissions', rejected: resolution.rejected },
+    );
+  }
+
+  throw new ApiError(
+    403,
+    'No puedes otorgar permisos que tu cuenta no tiene',
+    'PERMISSION_NOT_GRANTABLE',
+    { field: 'permissions', rejected: resolution.rejected },
+  );
 }
 
 function toUserProjectView(record: ConsultantAssignmentRecord): UserProjectView {
@@ -96,6 +154,8 @@ function toUserProjectView(record: ConsultantAssignmentRecord): UserProjectView 
     startDate: record.start_date,
     endDate: record.end_date,
     isActive: record.is_active,
+    assignmentCode: record.assignment_code,
+    payTerms: toPayTermsView(record),
     project: record.project
       ? {
           id: record.project.id,
@@ -192,6 +252,7 @@ async function resolveAssignments(projects: UserProjectInput[]): Promise<NewUser
       currency: DEFAULT_CURRENCY,
       startDate: item.startDate,
       endDate: item.endDate ?? null,
+      assignmentCode: item.assignmentCode ?? null,
     });
   }
 
@@ -201,6 +262,7 @@ async function resolveAssignments(projects: UserProjectInput[]): Promise<NewUser
 export async function createUser(input: CreateUserInput, actor: Actor): Promise<UserView> {
   const role = await resolveRole(input.roleCode, actor);
 
+  const permissions = permissionsFor(role.code, input.permissions, actor);
   const assignments = await resolveAssignments(input.projects ?? []);
 
   const created = await usersRepository.insertUser(
@@ -214,13 +276,18 @@ export async function createUser(input: CreateUserInput, actor: Actor): Promise<
       is_active: input.isActive ?? true,
       must_change_password: true,
     },
+    permissions,
+    actor.id,
     assignments,
   );
+
+  if (assignments.length) queueNotificationEmails({ userId: created.id });
 
   logger.info(
     {
       userId: created.id,
       roleCode: role.code,
+      permissions,
       createdBy: actor.id,
       projectIds: assignments.map((assignment) => assignment.projectId),
     },
@@ -248,6 +315,7 @@ export async function listUsers(
     pageSize: query.pageSize,
     search: query.search,
     roleId,
+    permission: query.permission,
     isActive: query.status === 'all' ? undefined : query.status === 'active',
     sortColumn: SORT_COLUMNS[query.sortBy],
     ascending: query.sortDir === 'asc',
@@ -275,6 +343,8 @@ export async function updateUser(
   const isSelf = target.id === actor.id;
 
   const patch: UserPatch = {};
+  let roleCode = target.role?.code ?? '';
+  let roleChanged = false;
 
   if (input.roleCode !== undefined) {
     const role = await resolveRole(input.roleCode, actor);
@@ -282,6 +352,26 @@ export async function updateUser(
       throw new ApiError(403, 'No puedes cambiar tu propio rol', 'SELF_ROLE_CHANGE');
     }
     patch.role_id = role.id;
+    roleChanged = role.code !== roleCode;
+    roleCode = role.code;
+  }
+
+  let permissions: string[] | null = null;
+
+  if (input.permissions !== undefined || roleChanged) {
+    const current = permissionCodesOf(target);
+    const next = permissionsFor(roleCode, input.permissions, actor, current);
+
+    if (!sameCodes(current, next)) {
+      if (isSelf) {
+        throw new ApiError(
+          403,
+          'No puedes cambiar tus propios permisos',
+          'SELF_PERMISSIONS_CHANGE',
+        );
+      }
+      permissions = next;
+    }
   }
 
   if (input.isActive !== undefined) {
@@ -301,14 +391,31 @@ export async function updateUser(
     patch.must_change_password = !isSelf;
   }
 
-  const updated = await usersRepository.updateUser(id, patch);
+  if (Object.keys(patch).length) {
+    const updated = await usersRepository.updateUser(id, patch);
+
+    if (!updated) {
+      throw ApiError.notFound('El usuario no existe');
+    }
+  }
+
+  if (permissions) {
+    await usersRepository.replacePermissions(id, permissions, actor.id);
+  }
+
+  const updated = await usersRepository.findUserById(id);
 
   if (!updated) {
     throw ApiError.notFound('El usuario no existe');
   }
 
   logger.info(
-    { userId: id, updatedBy: actor.id, fields: Object.keys(patch) },
+    {
+      userId: id,
+      updatedBy: actor.id,
+      fields: Object.keys(patch),
+      permissions: permissions ?? undefined,
+    },
     'Usuario actualizado',
   );
 
@@ -385,6 +492,7 @@ export async function assignProjectToUser(
       currency: DEFAULT_CURRENCY,
       startDate: input.startDate,
       endDate: input.endDate ?? null,
+      assignmentCode: input.assignmentCode ?? null,
     },
     actor,
   );
@@ -425,4 +533,61 @@ export async function removeUserProject(
   const assignment = await loadUserAssignment(id, assignmentId, actor);
 
   return projectsService.deactivateAssignment(assignment.project_id, assignmentId, actor);
+}
+
+function translateDeletionFailure(error: RpcError): ApiError {
+  switch (error.failure.code) {
+    case 'USER_NOT_FOUND':
+      return ApiError.notFound('El usuario no existe');
+    case 'SELF_DELETION':
+      return new ApiError(403, 'No puedes eliminar tu propia cuenta', 'SELF_DELETION');
+    case 'USER_STILL_ACTIVE':
+      return new ApiError(
+        409,
+        'Desactiva la cuenta antes de eliminarla',
+        'USER_STILL_ACTIVE',
+      );
+    case 'USER_HAS_HISTORY': {
+      let blockers: unknown = null;
+
+      try {
+        blockers = JSON.parse(error.failure.detail ?? '{}');
+      } catch {
+        blockers = null;
+      }
+
+      return new ApiError(
+        409,
+        'Este usuario tiene historial en el sistema; solo puede quedar desactivado',
+        'USER_HAS_HISTORY',
+        { blockers },
+      );
+    }
+    default:
+      logger.error({ failure: error.failure }, 'Fallo no mapeado al eliminar usuario');
+      return ApiError.internal('No fue posible eliminar el usuario, intenta de nuevo');
+  }
+}
+
+export async function deleteUserPermanently(
+  id: number,
+  actor: Actor,
+): Promise<usersRepository.DeletedUserResult> {
+  await loadManageableUser(id, actor);
+
+  try {
+    const deleted = await usersRepository.deleteUserPermanently(id, actor.id);
+
+    logger.warn(
+      { userId: id, userName: deleted.userName, deletedBy: actor.id },
+      'Usuario eliminado de forma permanente',
+    );
+
+    return deleted;
+  } catch (error) {
+    if (error instanceof RpcError) {
+      throw translateDeletionFailure(error);
+    }
+    throw error;
+  }
 }
