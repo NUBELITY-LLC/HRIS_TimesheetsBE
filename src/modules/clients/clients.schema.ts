@@ -20,6 +20,7 @@ export const createClientSchema = z.object({
   companyId: positiveId,
   clientName,
   contactEmail: contactEmail.nullish(),
+  userId: positiveId.nullish(),
   isActive: z.boolean().optional(),
 });
 
@@ -28,6 +29,7 @@ export const updateClientSchema = z
     companyId: positiveId.optional(),
     clientName: clientName.optional(),
     contactEmail: contactEmail.nullish(),
+    userId: positiveId.nullish(),
     isActive: z.boolean().optional(),
   })
   .refine((value) => Object.values(value).some((field) => field !== undefined), {

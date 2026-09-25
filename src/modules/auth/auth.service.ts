@@ -3,6 +3,8 @@ import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { fakeVerifyPassword, hashPassword, verifyPassword } from '../../utils/password.js';
 import { signAccessToken } from '../../utils/jwt.js';
+import { parseDbTimestamp } from '../../utils/timestamps.js';
+import { PERMISSION_CODES } from '../../utils/permissions.js';
 import * as authRepository from './auth.repository.js';
 import type { UserCredentialsRecord } from './auth.repository.js';
 import type { ChangePasswordInput, LoginInput } from './auth.schema.js';
@@ -16,6 +18,7 @@ export type AuthenticatedUser = {
   lastLoginAt: string | null;
   mustChangePassword: boolean;
   role: { id: number; code: string; name: string };
+  permissions: string[];
 };
 
 export type LoginResult = {
@@ -52,7 +55,7 @@ function invalidCredentialsError(remainingAttempts?: number): ApiError {
   );
 }
 
-function toAuthenticatedUser(record: UserCredentialsRecord): AuthenticatedUser {
+async function toAuthenticatedUser(record: UserCredentialsRecord): Promise<AuthenticatedUser> {
   if (!record.role) {
     logger.error({ userId: record.id, roleId: record.role_id }, 'Usuario sin rol asociado');
     throw ApiError.internal('La cuenta no tiene un rol valido asignado');
@@ -67,7 +70,13 @@ function toAuthenticatedUser(record: UserCredentialsRecord): AuthenticatedUser {
     lastLoginAt: record.last_login_at,
     mustChangePassword: record.must_change_password,
     role: record.role,
+    permissions: await permissionsOf(record.id),
   };
+}
+
+async function permissionsOf(userId: number): Promise<string[]> {
+  const granted = await authRepository.findPermissionCodes(userId);
+  return PERMISSION_CODES.filter((code) => granted.includes(code));
 }
 
 async function issueSession(user: AuthenticatedUser): Promise<LoginResult> {
@@ -102,7 +111,7 @@ function assertActiveAccount(isActive: boolean): void {
 function activeLock(record: UserCredentialsRecord): Date | null {
   if (!record.locked_until) return null;
 
-  const lockedUntil = new Date(record.locked_until);
+  const lockedUntil = parseDbTimestamp(record.locked_until);
   return lockedUntil.getTime() > Date.now() ? lockedUntil : null;
 }
 
@@ -144,7 +153,7 @@ export async function login(input: LoginInput): Promise<LoginResult> {
     await registerFailedAttempt(record);
   }
 
-  const user = toAuthenticatedUser(record);
+  const user = await toAuthenticatedUser(record);
   await authRepository.registerSuccessfulLogin(record.id);
 
   logger.info(
@@ -163,7 +172,7 @@ export async function getProfile(userId: number): Promise<AuthenticatedUser> {
   }
   assertActiveAccount(record.is_active);
 
-  return toAuthenticatedUser(record);
+  return await toAuthenticatedUser(record);
 }
 
 export async function changePassword(
@@ -209,5 +218,5 @@ export async function changePassword(
     'Contrasena actualizada por el propio usuario',
   );
 
-  return issueSession({ ...toAuthenticatedUser(record), mustChangePassword: false });
+  return issueSession({ ...(await toAuthenticatedUser(record)), mustChangePassword: false });
 }

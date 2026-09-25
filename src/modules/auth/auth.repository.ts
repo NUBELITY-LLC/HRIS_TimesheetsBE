@@ -118,3 +118,14 @@ export async function updatePassword(id: number, passwordHash: string): Promise<
 
   if (error) fail('updatePassword', error);
 }
+
+export async function findPermissionCodes(userId: number): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('USER_PERMISSIONS')
+    .select('permission_code')
+    .eq('user_id', userId);
+
+  if (error) fail('findPermissionCodes', error);
+
+  return (data ?? []).map((row) => row.permission_code);
+}

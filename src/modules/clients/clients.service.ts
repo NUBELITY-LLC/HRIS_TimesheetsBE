@@ -2,6 +2,9 @@ import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { resolveCompany } from '../companies/companies.service.js';
 import type { CompanyView } from '../companies/companies.service.js';
+import { PERMISSION_TIMESHEETS_APPROVE } from '../../utils/permissions.js';
+import { CLIENT_MANAGER_ROLES } from '../../utils/roles.js';
+import * as projectsRepository from '../projects/projects.repository.js';
 import * as clientsRepository from './clients.repository.js';
 import type { ClientPatch, ClientRecord, SortColumn } from './clients.repository.js';
 import type { CreateClientInput, ListClientsQuery, UpdateClientInput } from './clients.schema.js';
@@ -14,6 +17,7 @@ export type ClientView = {
   contactEmail: string | null;
   isActive: boolean;
   company: CompanyView | null;
+  user: { id: number; fullName: string; email: string } | null;
 };
 
 const SORT_COLUMNS: Record<ListClientsQuery['sortBy'], SortColumn> = {
@@ -27,6 +31,9 @@ function toClientView(record: ClientRecord): ClientView {
     clientName: record.client_name,
     contactEmail: record.contact_email,
     isActive: record.is_active,
+    user: record.user
+      ? { id: record.user.id, fullName: record.user.full_name, email: record.user.email }
+      : null,
     company: record.company
       ? {
           id: record.company.id,
@@ -39,13 +46,33 @@ function toClientView(record: ClientRecord): ClientView {
   };
 }
 
+async function resolveClientUser(userId: number): Promise<projectsRepository.UserRef> {
+  const user = await projectsRepository.findUserById(userId);
+
+  if (
+    !user ||
+    !user.is_active ||
+    !CLIENT_MANAGER_ROLES.includes(user.role?.code ?? '') ||
+    !(await projectsRepository.userHasPermission(user.id, PERMISSION_TIMESHEETS_APPROVE))
+  ) {
+    throw ApiError.unprocessable('Ese usuario no puede ser gerente', {
+      field: 'userId',
+      code: 'CLIENT_USER_NOT_ALLOWED',
+    });
+  }
+
+  return user;
+}
+
 export async function createClient(input: CreateClientInput, actor: Actor): Promise<ClientView> {
   await resolveCompany(input.companyId);
+  const user = input.userId ? await resolveClientUser(input.userId) : null;
 
   const created = await clientsRepository.insertClient({
     company_id: input.companyId,
     client_name: input.clientName,
-    contact_email: input.contactEmail ?? null,
+    contact_email: user ? user.email.toLowerCase() : (input.contactEmail ?? null),
+    user_id: user?.id ?? null,
     is_active: input.isActive ?? true,
   });
 
@@ -100,6 +127,11 @@ export async function updateClient(
   if (input.clientName !== undefined) patch.client_name = input.clientName;
   if (input.contactEmail !== undefined) patch.contact_email = input.contactEmail;
   if (input.isActive !== undefined) patch.is_active = input.isActive;
+  if (input.userId !== undefined) {
+    const user = input.userId ? await resolveClientUser(input.userId) : null;
+    patch.user_id = user?.id ?? null;
+    if (user) patch.contact_email = user.email.toLowerCase();
+  }
 
   const updated = await clientsRepository.updateClient(id, patch);
 

@@ -76,7 +76,17 @@ export const listTimesheetsQuerySchema = z.object({
     .max(50, 'El tamano de pagina maximo es 50')
     .default(10),
   status: z
-    .enum(['DRAFT', 'SUBMITTED', 'IN_REVIEW', 'REJECTED', 'APPROVED', 'CLOSED', 'PAID', 'all'])
+    .enum([
+      'DRAFT',
+      'SUBMITTED',
+      'IN_REVIEW',
+      'REJECTED',
+      'APPROVED',
+      'CLOSED',
+      'PAID',
+      'sent',
+      'all',
+    ])
     .default('all'),
 });
 

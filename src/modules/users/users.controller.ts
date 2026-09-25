@@ -17,7 +17,11 @@ function requireActor(req: Request): usersService.Actor {
     throw ApiError.unauthorized();
   }
 
-  return { id: req.user.id, roleCode: req.user.roleCode };
+  return {
+    id: req.user.id,
+    roleCode: req.user.roleCode,
+    permissions: req.user.permissions ?? [],
+  };
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
@@ -93,4 +97,13 @@ export async function updateMe(req: Request, res: Response): Promise<void> {
   const user = await usersService.updateOwnProfile(actor.id, req.body as UpdateOwnProfileInput);
 
   ok(res, { user });
+}
+
+export async function deletePermanently(req: Request, res: Response): Promise<void> {
+  const deleted = await usersService.deleteUserPermanently(
+    Number(req.params.id),
+    requireActor(req),
+  );
+
+  ok(res, { deleted });
 }

@@ -67,3 +67,17 @@ export async function summary(req: Request, res: Response): Promise<void> {
 
   ok(res, { summary: data });
 }
+
+export async function listTeam(req: Request, res: Response): Promise<void> {
+  const query = validatedQuery<ListTimesheetsQuery>(res);
+  const { timesheets, total } = await timesheetsService.listTeamTimesheets(query, requireActor(req));
+
+  paginated(res, timesheets, buildPagination(query.page, query.pageSize, total));
+}
+
+export async function teamSummary(req: Request, res: Response): Promise<void> {
+  const query = validatedQuery<SummaryQuery>(res);
+  const summary = await timesheetsService.getTeamSummary(query, requireActor(req));
+
+  ok(res, { summary });
+}

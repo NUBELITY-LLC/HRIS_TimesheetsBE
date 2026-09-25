@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { requireAuth, requirePasswordChanged, requireRoles } from '../../middlewares/auth.js';
+import { requireAuth, requirePasswordChanged, requirePermission } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
-import { CATALOG_MANAGER_ROLES } from '../../utils/roles.js';
+import { PERMISSION_CATALOG_MANAGE } from '../../utils/permissions.js';
 import * as projectsController from './projects.controller.js';
 import {
   assignmentParamsSchema,
@@ -18,7 +18,7 @@ import {
 
 export const projectsRouter: Router = Router();
 
-projectsRouter.use(requireAuth, requirePasswordChanged, requireRoles(...CATALOG_MANAGER_ROLES));
+projectsRouter.use(requireAuth, requirePasswordChanged, requirePermission(PERMISSION_CATALOG_MANAGE));
 
 projectsRouter.get(
   '/',

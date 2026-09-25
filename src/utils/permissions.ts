@@ -1,0 +1,69 @@
+import {
+  ROLE_ADMIN,
+  ROLE_CONSULTANT,
+  ROLE_EMPLOYEE,
+  ROLE_EXTERNAL_MANAGER,
+  ROLE_FINANCE,
+  ROLE_MANAGER,
+} from './roles.js';
+
+export const PERMISSION_TIMESHEETS_SUBMIT = 'TIMESHEETS_SUBMIT';
+export const PERMISSION_TIMESHEETS_APPROVE = 'TIMESHEETS_APPROVE';
+export const PERMISSION_CATALOG_MANAGE = 'CATALOG_MANAGE';
+export const PERMISSION_USERS_MANAGE = 'USERS_MANAGE';
+export const PERMISSION_REPORTS_VIEW = 'REPORTS_VIEW';
+export const PERMISSION_PAYROLL_MANAGE = 'PAYROLL_MANAGE';
+
+export const PERMISSION_CODES = [
+  PERMISSION_TIMESHEETS_SUBMIT,
+  PERMISSION_TIMESHEETS_APPROVE,
+  PERMISSION_CATALOG_MANAGE,
+  PERMISSION_USERS_MANAGE,
+  PERMISSION_REPORTS_VIEW,
+  PERMISSION_PAYROLL_MANAGE,
+] as const;
+
+export type PermissionCode = (typeof PERMISSION_CODES)[number];
+
+const DEFAULT_PERMISSIONS: Record<string, PermissionCode[]> = {
+  [ROLE_ADMIN]: [
+    PERMISSION_TIMESHEETS_APPROVE,
+    PERMISSION_CATALOG_MANAGE,
+    PERMISSION_USERS_MANAGE,
+    PERMISSION_REPORTS_VIEW,
+    PERMISSION_PAYROLL_MANAGE,
+  ],
+  [ROLE_MANAGER]: [
+    PERMISSION_TIMESHEETS_SUBMIT,
+    PERMISSION_TIMESHEETS_APPROVE,
+    PERMISSION_CATALOG_MANAGE,
+    PERMISSION_USERS_MANAGE,
+  ],
+  [ROLE_FINANCE]: [
+    PERMISSION_TIMESHEETS_SUBMIT,
+    PERMISSION_TIMESHEETS_APPROVE,
+    PERMISSION_REPORTS_VIEW,
+    PERMISSION_PAYROLL_MANAGE,
+  ],
+  [ROLE_CONSULTANT]: [PERMISSION_TIMESHEETS_SUBMIT],
+  [ROLE_EMPLOYEE]: [PERMISSION_TIMESHEETS_SUBMIT],
+  [ROLE_EXTERNAL_MANAGER]: [PERMISSION_TIMESHEETS_APPROVE],
+};
+
+const FIXED_PERMISSION_ROLES = [ROLE_ADMIN, ROLE_EXTERNAL_MANAGER];
+
+export function isPermissionCode(value: string): value is PermissionCode {
+  return (PERMISSION_CODES as readonly string[]).includes(value);
+}
+
+export function defaultPermissionsFor(roleCode: string): PermissionCode[] {
+  return [...(DEFAULT_PERMISSIONS[roleCode] ?? [])];
+}
+
+export function hasFixedPermissions(roleCode: string): boolean {
+  return FIXED_PERMISSION_ROLES.includes(roleCode);
+}
+
+export function allowedPermissionsFor(roleCode: string): PermissionCode[] {
+  return hasFixedPermissions(roleCode) ? defaultPermissionsFor(roleCode) : [...PERMISSION_CODES];
+}

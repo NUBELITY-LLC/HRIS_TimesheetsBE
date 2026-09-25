@@ -24,6 +24,13 @@ type UsersRow = {
   must_change_password: boolean;
 };
 
+type UserPermissionsRow = {
+  user_id: number;
+  permission_code: string;
+  granted_by: number | null;
+  granted_at: string;
+};
+
 type CompaniesRow = {
   id: number;
   legal_name: string;
@@ -37,6 +44,7 @@ type ClientsRow = {
   company_id: number;
   client_name: string;
   contact_email: string | null;
+  user_id: number | null;
   is_active: boolean;
 };
 
@@ -62,6 +70,31 @@ type ProjectAssignmentsRow = {
   start_date: string;
   end_date: string | null;
   is_active: boolean;
+  assignment_code: string | null;
+  contract_type: string;
+  country_code: string;
+  hours_divisor: number;
+  daily_hours: number;
+  overtime_multiplier: number;
+  holiday_multiplier: number;
+};
+
+type PayrollCountryRulesRow = {
+  country_code: string;
+  overtime_multiplier: number;
+  overtime_triple_multiplier: number;
+  weekly_double_overtime_hours: number | null;
+  holiday_multiplier: number;
+  sunday_multiplier: number;
+  updated_by: number | null;
+  updated_at: string;
+};
+
+type HolidaysRow = {
+  id: number;
+  country_code: string;
+  holiday_date: string;
+  name: string;
 };
 
 export type ApproverType = (typeof APPROVER_TYPES)[number];
@@ -73,6 +106,7 @@ type ProjectApprovalStepsRow = {
   approver_type: ApproverType;
   user_id: number | null;
   role_id: number | null;
+  client_id: number | null;
   approver_email: string | null;
   approver_name: string | null;
   is_active: boolean;
@@ -160,6 +194,35 @@ type TimesheetEventsRow = {
   occurred_at: string;
 };
 
+export type ApprovalRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED';
+
+type ApprovalRequestsRow = {
+  id: number;
+  approval_id: number;
+  timesheet_id: number;
+  recipient_email: string;
+  token: string;
+  status: ApprovalRequestStatus;
+  sent_at: string;
+  responded_at: string | null;
+  response_note: string | null;
+  raw_payload: Json | null;
+  expires_at: string | null;
+  created_at: string;
+};
+
+type ApprovalAttachmentsRow = {
+  id: number;
+  approval_id: number;
+  timesheet_id: number;
+  uploaded_by: number;
+  storage_path: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: string;
+};
+
 type NotificationsRow = {
   id: number;
   user_id: number;
@@ -169,6 +232,12 @@ type NotificationsRow = {
   body: string | null;
   is_read: boolean;
   created_at: string;
+  email_status: string;
+  email_attempts: number;
+  email_claimed_at: string | null;
+  email_sent_at: string | null;
+  email_error: string | null;
+  dedupe_key: string | null;
 };
 
 type InsertOf<Row extends { id: number }, Optional extends keyof Row = never> = Omit<
@@ -208,6 +277,13 @@ export type Database = {
         Update: Partial<UsersRow>;
         Relationships: [ForeignKey<'role_id', 'ROLES'>];
       };
+      USER_PERMISSIONS: {
+        Row: UserPermissionsRow;
+        Insert: Omit<UserPermissionsRow, 'granted_by' | 'granted_at'> &
+          Partial<Pick<UserPermissionsRow, 'granted_by' | 'granted_at'>>;
+        Update: Partial<UserPermissionsRow>;
+        Relationships: [ForeignKey<'user_id', 'USERS'>];
+      };
       COMPANIES: {
         Row: CompaniesRow;
         Insert: InsertOf<CompaniesRow, 'rfc' | 'is_active'>;
@@ -216,9 +292,9 @@ export type Database = {
       };
       CLIENTS: {
         Row: ClientsRow;
-        Insert: InsertOf<ClientsRow, 'contact_email' | 'is_active'>;
+        Insert: InsertOf<ClientsRow, 'contact_email' | 'user_id' | 'is_active'>;
         Update: Partial<ClientsRow>;
-        Relationships: [ForeignKey<'company_id', 'COMPANIES'>];
+        Relationships: [ForeignKey<'company_id', 'COMPANIES'>, ForeignKey<'user_id', 'USERS'>];
       };
       PROJECTS: {
         Row: ProjectsRow;
@@ -231,7 +307,19 @@ export type Database = {
       };
       PROJECT_ASSIGNMENTS: {
         Row: ProjectAssignmentsRow;
-        Insert: InsertOf<ProjectAssignmentsRow, 'currency' | 'end_date' | 'is_active'>;
+        Insert: InsertOf<
+          ProjectAssignmentsRow,
+          | 'currency'
+          | 'end_date'
+          | 'is_active'
+          | 'assignment_code'
+          | 'contract_type'
+          | 'country_code'
+          | 'hours_divisor'
+          | 'daily_hours'
+          | 'overtime_multiplier'
+          | 'holiday_multiplier'
+        >;
         Update: Partial<ProjectAssignmentsRow>;
         Relationships: [
           ForeignKey<'project_id', 'PROJECTS'>,
@@ -242,13 +330,14 @@ export type Database = {
         Row: ProjectApprovalStepsRow;
         Insert: InsertOf<
           ProjectApprovalStepsRow,
-          'user_id' | 'role_id' | 'approver_email' | 'approver_name' | 'is_active'
+          'user_id' | 'role_id' | 'client_id' | 'approver_email' | 'approver_name' | 'is_active'
         >;
         Update: Partial<ProjectApprovalStepsRow>;
         Relationships: [
           ForeignKey<'project_id', 'PROJECTS'>,
           ForeignKey<'user_id', 'USERS'>,
           ForeignKey<'role_id', 'ROLES'>,
+          ForeignKey<'client_id', 'CLIENTS'>,
         ];
       };
       TIMESHEETS: {
@@ -267,6 +356,19 @@ export type Database = {
         >;
         Update: Partial<TimesheetsRow>;
         Relationships: [ForeignKey<'assignment_id', 'PROJECT_ASSIGNMENTS'>];
+      };
+      PAYROLL_COUNTRY_RULES: {
+        Row: PayrollCountryRulesRow;
+        Insert: Pick<PayrollCountryRulesRow, 'country_code'> &
+          Partial<Omit<PayrollCountryRulesRow, 'country_code'>>;
+        Update: Partial<PayrollCountryRulesRow>;
+        Relationships: [];
+      };
+      HOLIDAYS: {
+        Row: HolidaysRow;
+        Insert: InsertOf<HolidaysRow>;
+        Update: Partial<HolidaysRow>;
+        Relationships: [];
       };
       TIMESHEET_DAYS: {
         Row: TimesheetDaysRow;
@@ -324,11 +426,49 @@ export type Database = {
           ForeignKey<'actor_id', 'USERS'>,
         ];
       };
+      APPROVAL_REQUESTS: {
+        Row: ApprovalRequestsRow;
+        Insert: InsertOf<
+          ApprovalRequestsRow,
+          | 'status'
+          | 'sent_at'
+          | 'responded_at'
+          | 'response_note'
+          | 'raw_payload'
+          | 'expires_at'
+          | 'created_at'
+        >;
+        Update: Partial<ApprovalRequestsRow>;
+        Relationships: [
+          ForeignKey<'approval_id', 'TIMESHEET_APPROVALS'>,
+          ForeignKey<'timesheet_id', 'TIMESHEETS'>,
+        ];
+      };
+      APPROVAL_ATTACHMENTS: {
+        Row: ApprovalAttachmentsRow;
+        Insert: InsertOf<ApprovalAttachmentsRow, 'created_at'>;
+        Update: Partial<ApprovalAttachmentsRow>;
+        Relationships: [
+          ForeignKey<'approval_id', 'TIMESHEET_APPROVALS'>,
+          ForeignKey<'timesheet_id', 'TIMESHEETS'>,
+          ForeignKey<'uploaded_by', 'USERS'>,
+        ];
+      };
       NOTIFICATIONS: {
         Row: NotificationsRow;
         Insert: InsertOf<
           NotificationsRow,
-          'timesheet_id' | 'kind' | 'body' | 'is_read' | 'created_at'
+          | 'timesheet_id'
+          | 'kind'
+          | 'body'
+          | 'is_read'
+          | 'created_at'
+          | 'email_status'
+          | 'email_attempts'
+          | 'email_claimed_at'
+          | 'email_sent_at'
+          | 'email_error'
+          | 'dedupe_key'
         >;
         Update: Partial<NotificationsRow>;
         Relationships: [
@@ -369,7 +509,69 @@ export type Database = {
           p_actor_id: number;
           p_actor_role_code: string;
         };
+        Returns: Json;
+      };
+      fn_route_current_step: {
+        Args: {
+          p_timesheet_id: number;
+          p_actor_id: number;
+          p_actor_role_code: string;
+        };
+        Returns: Json;
+      };
+      fn_approve_external_step: {
+        Args: {
+          p_approval_id: number;
+          p_actor_id: number;
+          p_actor_role_code: string;
+          p_comments: string | null;
+        };
+        Returns: Json;
+      };
+      fn_decide_internal_step: {
+        Args: {
+          p_approval_id: number;
+          p_actor_id: number;
+          p_actor_role_code: string;
+          p_decision: string;
+          p_comments: string | null;
+        };
+        Returns: Json;
+      };
+      fn_replace_user_permissions: {
+        Args: { p_user_id: number; p_permissions: Json; p_actor_id: number };
         Returns: number;
+      };
+      fn_delete_user: {
+        Args: { p_user_id: number; p_actor_id: number };
+        Returns: Json;
+      };
+      fn_team_timesheets: {
+        Args: {
+          p_actor_id: number;
+          p_role_code: string;
+          p_limit: number;
+          p_offset: number;
+        };
+        Returns: Json;
+      };
+      fn_team_summary: {
+        Args: {
+          p_actor_id: number;
+          p_role_code: string;
+          p_from: string;
+          p_to: string;
+        };
+        Returns: Json;
+      };
+      fn_pending_approvals: {
+        Args: {
+          p_user_id: number;
+          p_role_code: string;
+          p_limit: number;
+          p_offset: number;
+        };
+        Returns: Json;
       };
       fn_close_project: {
         Args: {
@@ -382,6 +584,21 @@ export type Database = {
       fn_reopen_project: {
         Args: {
           p_project_id: number;
+        };
+        Returns: Json;
+      };
+      fn_create_timesheet_reminders: {
+        Args: { p_week_start: string };
+        Returns: number;
+      };
+      fn_claim_notification_emails: {
+        Args: {
+          p_timesheet_id?: number | null;
+          p_user_id?: number | null;
+          p_limit?: number;
+          p_max_attempts?: number;
+          p_stale_minutes?: number;
+          p_max_age_days?: number;
         };
         Returns: Json;
       };

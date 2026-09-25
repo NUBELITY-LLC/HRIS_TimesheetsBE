@@ -1,5 +1,6 @@
 import { supabase } from '../src/config/supabase.js';
 import { hashPassword } from '../src/utils/password.js';
+import { defaultPermissionsFor } from '../src/utils/permissions.js';
 
 async function main(): Promise<void> {
   const [userName, email, password, roleCode, fullName] = process.argv.slice(2);
@@ -28,8 +29,8 @@ async function main(): Promise<void> {
     .insert({
       role_id: role.id,
       full_name: fullName,
-      user_name: userName,
-      email,
+      user_name: userName.trim().toLowerCase(),
+      email: email.trim().toLowerCase(),
       password_hash: await hashPassword(password),
       job_title: null,
       locked_until: null,
@@ -40,6 +41,16 @@ async function main(): Promise<void> {
     .single();
 
   if (error) throw error;
+
+  const permissions = defaultPermissionsFor(role.code);
+
+  if (permissions.length) {
+    const { error: permissionsError } = await supabase
+      .from('USER_PERMISSIONS')
+      .insert(permissions.map((code) => ({ user_id: data.id, permission_code: code })));
+
+    if (permissionsError) throw permissionsError;
+  }
 
   console.warn(`Usuario creado: #${data.id} ${data.user_name} <${data.email}> [${role.code}]`);
 }

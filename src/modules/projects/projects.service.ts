@@ -1,9 +1,12 @@
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { MAX_APPROVAL_STEPS, MIN_APPROVAL_STEPS } from '../../utils/approvals.js';
-import { APPROVER_ROLES, ASSIGNABLE_ROLES, PROJECT_MANAGER_ROLES } from '../../utils/roles.js';
+import { PERMISSION_TIMESHEETS_APPROVE } from '../../utils/permissions.js';
+import { ASSIGNABLE_ROLES, PROJECT_MANAGER_ROLES } from '../../utils/roles.js';
 import { PROJECT_STATUS_CLOSED, type ProjectStatus } from '../../utils/projects.js';
 import * as clientsRepository from '../clients/clients.repository.js';
+import { toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import { queueNotificationEmails } from '../notifications/notifications.emails.js';
 import * as repository from './projects.repository.js';
 import type {
   AssignmentPatch,
@@ -54,6 +57,8 @@ export type AssignmentView = {
   startDate: string;
   endDate: string | null;
   isActive: boolean;
+  assignmentCode: string | null;
+  payTerms: PayTermsView;
   consultant: PersonView | null;
 };
 
@@ -125,6 +130,8 @@ function toAssignmentView(record: AssignmentRecord): AssignmentView {
     startDate: record.start_date,
     endDate: record.end_date,
     isActive: record.is_active,
+    assignmentCode: record.assignment_code,
+    payTerms: toPayTermsView(record),
     consultant: toPersonView(record.consultant),
   };
 }
@@ -391,6 +398,19 @@ export async function assignConsultant(
 ): Promise<AssignmentView> {
   const project = await loadProject(projectId);
   assertProjectOpen(project, 'no admite asignaciones nuevas');
+
+  const steps = await repository.findApprovalSteps(projectId);
+  const activeSteps = steps.filter((step) => step.is_active).length;
+
+  if (activeSteps < MIN_APPROVAL_STEPS) {
+    throw new ApiError(
+      422,
+      `Configura el flujo de aprobacion del proyecto (minimo ${MIN_APPROVAL_STEPS} aprobadores) antes de asignar personas`,
+      'INCOMPLETE_APPROVAL_WORKFLOW',
+      { steps: activeSteps, minApprovers: MIN_APPROVAL_STEPS },
+    );
+  }
+
   await resolveConsultant(input.consultantId);
 
   assertWithinProject(project, input.startDate, input.endDate ?? null);
@@ -416,7 +436,10 @@ export async function assignConsultant(
     start_date: input.startDate,
     end_date: input.endDate ?? null,
     is_active: true,
+    assignment_code: input.assignmentCode ?? null,
   });
+
+  queueNotificationEmails({ userId: input.consultantId });
 
   logger.info(
     { assignmentId: created.id, projectId, consultantId: input.consultantId, createdBy: actor.id },
@@ -456,6 +479,7 @@ export async function updateAssignment(
   if (input.startDate !== undefined) patch.start_date = input.startDate;
   if (input.endDate !== undefined) patch.end_date = input.endDate;
   if (input.isActive !== undefined) patch.is_active = input.isActive;
+  if (input.assignmentCode !== undefined) patch.assignment_code = input.assignmentCode ?? null;
 
   const startDate = patch.start_date ?? target.start_date;
   const endDate = patch.end_date !== undefined ? patch.end_date : target.end_date;
@@ -535,11 +559,11 @@ async function resolveNominatedApprover(userId: number, path: string): Promise<U
     throw ApiError.unprocessable('El aprobador indicado esta inactivo', { path });
   }
 
-  if (!APPROVER_ROLES.includes(approver.role?.code ?? '')) {
-    throw ApiError.unprocessable(
-      `Un aprobador nominado debe tener rol ${APPROVER_ROLES.join(' o ')}`,
-      { path, allowedRoles: APPROVER_ROLES },
-    );
+  if (!(await repository.userHasPermission(approver.id, PERMISSION_TIMESHEETS_APPROVE))) {
+    throw ApiError.unprocessable('El aprobador indicado no tiene permiso para aprobar horas', {
+      path,
+      code: 'APPROVER_WITHOUT_PERMISSION',
+    });
   }
 
   return approver;

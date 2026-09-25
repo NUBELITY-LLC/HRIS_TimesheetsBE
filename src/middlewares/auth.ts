@@ -1,5 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
+import { findPermissionCodes } from '../modules/auth/auth.repository.js';
 import { ApiError } from '../utils/ApiError.js';
+import type { PermissionCode } from '../utils/permissions.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 
 function extractBearerToken(req: Request): string | null {
@@ -75,5 +77,32 @@ export function requireRoles(...allowedRoles: string[]) {
     }
 
     next();
+  };
+}
+
+export async function loadPermissions(user: Express.AuthenticatedUser): Promise<string[]> {
+  user.permissions ??= await findPermissionCodes(user.id);
+  return user.permissions;
+}
+
+export function requirePermission(...anyOf: PermissionCode[]) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (!req.user) {
+        next(ApiError.unauthorized());
+        return;
+      }
+
+      const granted = await loadPermissions(req.user);
+
+      if (!anyOf.some((code) => granted.includes(code))) {
+        next(ApiError.forbidden('No cuentas con el permiso requerido para esta operacion'));
+        return;
+      }
+
+      next();
+    } catch (error) {
+      next(error);
+    }
   };
 }

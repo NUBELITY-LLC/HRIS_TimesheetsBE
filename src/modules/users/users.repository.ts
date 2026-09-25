@@ -1,6 +1,7 @@
 import { supabase } from '../../config/supabase.js';
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
+import { RAISE_EXCEPTION, RpcError, parseRpcFailure } from '../../utils/rpc.js';
 
 export type RoleRecord = { id: number; code: string; name: string };
 
@@ -14,6 +15,7 @@ export type UserRecord = {
   must_change_password: boolean;
   last_login_at: string | null;
   role: RoleRecord | null;
+  permissions: { permission_code: string }[] | null;
 };
 
 export type NewUserRow = {
@@ -33,6 +35,7 @@ export type NewUserAssignment = {
   currency: string;
   startDate: string;
   endDate: string | null;
+  assignmentCode: string | null;
 };
 
 export type UserPatch = {
@@ -53,6 +56,7 @@ export type ListUsersFilters = {
   pageSize: number;
   search?: string;
   roleId?: number;
+  permission?: string;
   isActive?: boolean;
   sortColumn: SortColumn;
   ascending: boolean;
@@ -60,7 +64,7 @@ export type ListUsersFilters = {
 
 const USER_COLUMNS =
   'id, full_name, user_name, email, job_title, is_active, must_change_password, last_login_at, ' +
-  'role:ROLES!inner(id, code, name)';
+  'role:ROLES!inner(id, code, name), permissions:USER_PERMISSIONS(permission_code)';
 
 const UNIQUE_VIOLATION = '23505';
 const FOREIGN_KEY_VIOLATION = '23503';
@@ -105,6 +109,8 @@ export async function findRoleByCode(code: string): Promise<RoleRecord | null> {
 
 export async function insertUser(
   row: NewUserRow,
+  permissions: string[],
+  createdBy: number,
   assignments: NewUserAssignment[],
 ): Promise<UserRecord> {
   const { data, error } = await supabase.rpc('fn_create_user_with_assignments', {
@@ -117,6 +123,8 @@ export async function insertUser(
       jobTitle: row.job_title,
       isActive: row.is_active,
       mustChangePassword: row.must_change_password,
+      permissions,
+      createdBy,
     },
     p_assignments: assignments,
   });
@@ -153,8 +161,15 @@ export async function findUserById(id: number): Promise<UserRecord | null> {
 export async function findUsers(
   filters: ListUsersFilters,
 ): Promise<{ rows: UserRecord[]; total: number }> {
-  let query = supabase.from('USERS').select(USER_COLUMNS, { count: 'exact' });
+  const columns = filters.permission
+    ? `${USER_COLUMNS}, granted:USER_PERMISSIONS!inner(permission_code)`
+    : USER_COLUMNS;
 
+  let query = supabase.from('USERS').select(columns, { count: 'exact' });
+
+  if (filters.permission) {
+    query = query.eq('granted.permission_code', filters.permission);
+  }
   if (filters.roleId !== undefined) {
     query = query.eq('role_id', filters.roleId);
   }
@@ -194,4 +209,45 @@ export async function updateUser(id: number, patch: UserPatch): Promise<UserReco
   }
 
   return (data as unknown as UserRecord | null) ?? null;
+}
+
+export async function replacePermissions(
+  userId: number,
+  permissions: string[],
+  actorId: number,
+): Promise<void> {
+  const { error } = await supabase.rpc('fn_replace_user_permissions', {
+    p_user_id: userId,
+    p_permissions: permissions,
+    p_actor_id: actorId,
+  });
+
+  if (error) fail('replacePermissions', error);
+}
+
+export type DeletedUserResult = {
+  userId: number;
+  userName: string;
+  fullName: string;
+};
+
+export async function deleteUserPermanently(
+  userId: number,
+  actorId: number,
+): Promise<DeletedUserResult> {
+  const { data, error } = await supabase.rpc('fn_delete_user', {
+    p_user_id: userId,
+    p_actor_id: actorId,
+  });
+
+  if (error) {
+    if (error.code === RAISE_EXCEPTION) {
+      throw new RpcError(parseRpcFailure(error.message));
+    }
+
+    logger.error({ err: error, userId }, 'Fallo al eliminar el usuario');
+    throw ApiError.internal('No fue posible eliminar el usuario, intenta de nuevo');
+  }
+
+  return data as unknown as DeletedUserResult;
 }
