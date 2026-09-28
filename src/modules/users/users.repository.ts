@@ -33,6 +33,8 @@ export type NewUserAssignment = {
   projectId: number;
   payRate: number;
   currency: string;
+  ratePeriod: string;
+  contractType?: string;
   startDate: string;
   endDate: string | null;
   assignmentCode: string | null;
@@ -56,6 +58,7 @@ export type ListUsersFilters = {
   pageSize: number;
   search?: string;
   roleId?: number;
+  excludeRoleId?: number;
   permission?: string;
   isActive?: boolean;
   sortColumn: SortColumn;
@@ -172,6 +175,9 @@ export async function findUsers(
   }
   if (filters.roleId !== undefined) {
     query = query.eq('role_id', filters.roleId);
+  }
+  if (filters.excludeRoleId !== undefined) {
+    query = query.neq('role_id', filters.excludeRoleId);
   }
   if (filters.isActive !== undefined) {
     query = query.eq('is_active', filters.isActive);

@@ -85,6 +85,7 @@ create table if not exists public."PROJECT_ASSIGNMENTS" (
   consultant_id bigint         not null references public."USERS"(id),
   pay_rate      numeric(10, 2) not null,
   currency      char(3)        not null default 'USD',
+  rate_period   varchar(5)     not null default 'MONTH',
   start_date    date           not null,
   end_date      date,
   is_active     boolean        not null default true,
@@ -96,6 +97,7 @@ create table if not exists public."PROJECT_ASSIGNMENTS" (
   overtime_multiplier numeric(4, 2) not null default 2,
   holiday_multiplier  numeric(4, 2) not null default 2,
   constraint "chk_PROJECT_ASSIGNMENTS_pay_rate" check (pay_rate >= 0),
+  constraint "chk_PROJECT_ASSIGNMENTS_rate_period" check (rate_period in ('HOUR', 'MONTH', 'YEAR')),
   constraint "chk_PROJECT_ASSIGNMENTS_dates" check (end_date is null or end_date >= start_date),
   constraint "chk_PROJECT_ASSIGNMENTS_contract_type"
     check (contract_type in ('CONTRACTOR', 'PAYROLL')),
@@ -230,6 +232,7 @@ create table if not exists public."TIMESHEET_APPROVALS" (
   review_no          smallint    not null default 0,
   comments           text,
   decided_at         timestamp,
+  decided_by         bigint      references public."USERS"(id),
   constraint "chk_TIMESHEET_APPROVALS_approver_type"
     check (approver_type in ('CLIENT_EMAIL', 'USER', 'ROLE')),
   constraint "chk_TIMESHEET_APPROVALS_status" check (
@@ -318,6 +321,22 @@ create index if not exists "idx_APPROVAL_ATTACHMENTS_approval_id"
   on public."APPROVAL_ATTACHMENTS" (approval_id);
 create index if not exists "idx_APPROVAL_ATTACHMENTS_timesheet_id"
   on public."APPROVAL_ATTACHMENTS" (timesheet_id);
+
+create table if not exists public."TIMESHEET_ATTACHMENTS" (
+  id           bigint       generated always as identity primary key,
+  timesheet_id bigint       not null references public."TIMESHEETS"(id) on delete cascade,
+  uploaded_by  bigint       not null references public."USERS"(id),
+  storage_path varchar(400) not null unique,
+  file_name    varchar(255) not null,
+  mime_type    varchar(120) not null,
+  size_bytes   integer      not null,
+  created_at   timestamp    not null default now(),
+  constraint "chk_TIMESHEET_ATTACHMENTS_size"
+    check (size_bytes > 0 and size_bytes <= 10485760)
+);
+
+create index if not exists "idx_TIMESHEET_ATTACHMENTS_timesheet_id"
+  on public."TIMESHEET_ATTACHMENTS" (timesheet_id);
 
 create table if not exists public."NOTIFICATIONS" (
   id           bigint       generated always as identity primary key,
@@ -536,7 +555,7 @@ begin
     end if;
 
     insert into public."PROJECT_ASSIGNMENTS"
-      (project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active,
+      (project_id, consultant_id, pay_rate, currency, rate_period, start_date, end_date, is_active,
        assignment_code, contract_type, country_code, hours_divisor, daily_hours,
        overtime_multiplier, holiday_multiplier)
     values (
@@ -544,6 +563,7 @@ begin
       v_user_id,
       (v_assignment ->> 'payRate')::numeric,
       coalesce(v_assignment ->> 'currency', 'USD'),
+      coalesce(v_assignment ->> 'ratePeriod', 'MONTH'),
       (v_assignment ->> 'startDate')::date,
       (v_assignment ->> 'endDate')::date,
       true,
@@ -1354,6 +1374,7 @@ begin
   update public."TIMESHEET_APPROVALS"
      set status       = 'APPROVED',
          decided_at   = now(),
+         decided_by   = p_actor_id,
          resolved_via = 'PM_MANUAL',
          comments     = p_comments
    where id = v_current.id;
@@ -1386,7 +1407,19 @@ begin
    where timesheet_id = v_timesheet.id
      and cycle_no = v_timesheet.cycle_no
      and seq > v_current.seq
-     and status = 'PENDING';
+     and status in ('PENDING', 'REJECTED_TO_PREVIOUS');
+
+  update public."TIMESHEET_APPROVALS"
+     set status       = 'PENDING',
+         decided_at   = null,
+         decided_by   = null,
+         resolved_via = null,
+         comments     = null,
+         review_no    = review_no + 1
+   where timesheet_id = v_timesheet.id
+     and cycle_no = v_timesheet.cycle_no
+     and seq = v_next_seq
+     and status = 'REJECTED_TO_PREVIOUS';
 
   if v_next_seq is null then
     update public."TIMESHEETS"
@@ -1554,6 +1587,7 @@ begin
   update public."TIMESHEET_APPROVALS"
      set status       = v_step_status,
          decided_at   = now(),
+         decided_by   = p_actor_id,
          resolved_via = 'USER_ACTION',
          comments     = p_comments
    where id = v_current.id;
@@ -1565,7 +1599,19 @@ begin
      where timesheet_id = v_timesheet.id
        and cycle_no = v_timesheet.cycle_no
        and seq > v_current.seq
-       and status = 'PENDING';
+       and status in ('PENDING', 'REJECTED_TO_PREVIOUS');
+
+    update public."TIMESHEET_APPROVALS"
+       set status       = 'PENDING',
+           decided_at   = null,
+           decided_by   = null,
+           resolved_via = null,
+           comments     = null,
+           review_no    = review_no + 1
+     where timesheet_id = v_timesheet.id
+       and cycle_no = v_timesheet.cycle_no
+       and seq = v_next_seq
+       and status = 'REJECTED_TO_PREVIOUS';
 
     insert into public."TIMESHEET_EVENTS" (
       timesheet_id, actor_id, from_seq, to_seq, cycle_no, event_type,
@@ -1637,6 +1683,7 @@ begin
     update public."TIMESHEET_APPROVALS"
        set status       = 'PENDING',
            decided_at   = null,
+           decided_by   = null,
            resolved_via = null,
            comments     = null,
            review_no    = review_no + 1
@@ -2032,6 +2079,7 @@ alter table public."TIMESHEET_ACTIVITIES"   enable row level security;
 alter table public."TIMESHEET_APPROVALS"    enable row level security;
 alter table public."TIMESHEET_EVENTS"       enable row level security;
 alter table public."APPROVAL_REQUESTS"      enable row level security;
+alter table public."TIMESHEET_ATTACHMENTS"  enable row level security;
 alter table public."NOTIFICATIONS"          enable row level security;
 alter table public."PAYMENT_BATCHES"        enable row level security;
 alter table public."PAYMENTS"               enable row level security;

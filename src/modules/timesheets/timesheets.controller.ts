@@ -1,10 +1,13 @@
 import type { Request, Response } from 'express';
 import { ApiError } from '../../utils/ApiError.js';
-import { buildPagination, ok, paginated } from '../../utils/httpResponse.js';
+import { buildPagination, created, ok, paginated } from '../../utils/httpResponse.js';
 import { validatedQuery } from '../../middlewares/validate.js';
+import { readEvidence } from '../../middlewares/upload.js';
 import * as timesheetsService from './timesheets.service.js';
+import type { ExportedFile } from './timesheets.export.js';
 import type {
   CurrentTimesheetQuery,
+  ExportQuery,
   ListTimesheetsQuery,
   SaveDraftInput,
   SummaryQuery,
@@ -80,4 +83,52 @@ export async function teamSummary(req: Request, res: Response): Promise<void> {
   const summary = await timesheetsService.getTeamSummary(query, requireActor(req));
 
   ok(res, { summary });
+}
+
+export async function attachEvidence(req: Request, res: Response): Promise<void> {
+  const attachment = await timesheetsService.attachTimesheetEvidence(
+    Number(req.params.id),
+    readEvidence(req),
+    requireActor(req),
+  );
+
+  created(res, { attachment });
+}
+
+export async function getEvidence(req: Request, res: Response): Promise<void> {
+  const evidence = await timesheetsService.getTimesheetEvidenceLink(
+    Number(req.params.id),
+    Number(req.params.attachmentId),
+    requireActor(req),
+  );
+
+  ok(res, { evidence });
+}
+
+export async function removeEvidence(req: Request, res: Response): Promise<void> {
+  await timesheetsService.removeTimesheetEvidence(
+    Number(req.params.id),
+    Number(req.params.attachmentId),
+    requireActor(req),
+  );
+
+  ok(res, { removed: true });
+}
+
+export function sendExportedFile(res: Response, file: ExportedFile): void {
+  res.setHeader('Content-Type', file.contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${file.fileName}"`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(file.body);
+}
+
+export async function exportTimesheet(req: Request, res: Response): Promise<void> {
+  const query = validatedQuery<ExportQuery>(res);
+  const file = await timesheetsService.exportOwnTimesheet(
+    Number(req.params.id),
+    query.format,
+    requireActor(req),
+  );
+
+  sendExportedFile(res, file);
 }

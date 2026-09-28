@@ -7,6 +7,20 @@ import { queueNotificationEmails } from '../notifications/notifications.emails.j
 import { deliverApprovalRequests } from '../notifications/notifications.mailer.js';
 import * as repository from './timesheets.repository.js';
 import {
+  activityLogCode,
+  renderActivityLog,
+  type ExportFormat,
+  type ExportedFile,
+} from './timesheets.export.js';
+import {
+  assertEvidenceAllowed,
+  removeEvidence,
+  signEvidence,
+  timesheetEvidencePath,
+  uploadEvidence,
+  type UploadedEvidence,
+} from '../approvals/approvals.storage.js';
+import {
   DAY_MAX_MINUTES,
   currentWeekStartISO,
   formatMinutes,
@@ -49,6 +63,7 @@ export type ApprovalStepView = {
   approverRoleCode: string | null;
   status: string;
   decidedAt: string | null;
+  decidedBy: { id: number; name: string } | null;
   comments: string | null;
 };
 
@@ -77,7 +92,19 @@ export type TimesheetView = {
     activities: Array<{ lineNo: number; minutes: number; activity: string }>;
   }>;
   approvals?: ApprovalStepView[];
+  attachments?: TimesheetAttachmentView[];
 };
+
+export type TimesheetAttachmentView = {
+  id: number;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedBy: { id: number; name: string | null };
+  uploadedAt: string;
+};
+
+export const MAX_TIMESHEET_ATTACHMENTS = 5;
 
 export type SubmissionConfirmation = {
   submissionCode: string;
@@ -140,6 +167,7 @@ function toApprovalView(record: repository.ApprovalRecord): ApprovalStepView {
     approverRoleCode: record.approver_role_code,
     status: record.status,
     decidedAt: record.decided_at,
+    decidedBy: record.decider ? { id: record.decider.id, name: record.decider.full_name } : null,
     comments: record.comments,
   };
 }
@@ -172,10 +200,24 @@ function toTimesheetView(record: repository.TimesheetRecord): TimesheetView {
   };
 }
 
+export function toTimesheetAttachmentView(
+  record: repository.TimesheetAttachmentRecord,
+): TimesheetAttachmentView {
+  return {
+    id: record.id,
+    fileName: record.file_name,
+    mimeType: record.mime_type,
+    sizeBytes: record.size_bytes,
+    uploadedBy: { id: record.uploaded_by, name: record.uploader?.full_name ?? null },
+    uploadedAt: record.created_at,
+  };
+}
+
 async function withDetail(record: repository.TimesheetRecord): Promise<TimesheetView> {
-  const [days, approvals] = await Promise.all([
+  const [days, approvals, attachments] = await Promise.all([
     repository.findDays(record.id),
     repository.findApprovals(record.id, record.cycle_no),
+    repository.findTimesheetAttachments(record.id),
   ]);
 
   return {
@@ -194,6 +236,7 @@ async function withDetail(record: repository.TimesheetRecord): Promise<Timesheet
         })),
     })),
     approvals: approvals.map(toApprovalView),
+    attachments: attachments.map(toTimesheetAttachmentView),
   };
 }
 
@@ -606,12 +649,139 @@ export async function discardDraft(id: number, actor: Actor): Promise<void> {
     });
   }
 
+  const attachments = await repository.findTimesheetAttachments(id);
+
   await repository.deleteTimesheet(id);
+  await Promise.all(attachments.map((attachment) => removeEvidence(attachment.storage_path)));
 
   logger.info(
     { timesheetId: id, actorId: actor.id, weekStart: record.week_start_date },
     'Borrador de timesheet descartado',
   );
+}
+
+async function loadOwnTimesheet(
+  id: number,
+  actor: Actor,
+): Promise<repository.TimesheetRecord> {
+  const record = await repository.findTimesheetById(id);
+
+  if (!record) {
+    throw ApiError.notFound('El timesheet no existe');
+  }
+
+  assertTimesheetOwnership(record, actor);
+
+  return record;
+}
+
+function assertEvidenceEditable(record: repository.TimesheetRecord): void {
+  if (!isEditable(record.status)) {
+    throw new ApiError(
+      422,
+      'Las evidencias solo se modifican en borrador o rechazado',
+      'EVIDENCE_LOCKED',
+      { status: record.status },
+    );
+  }
+}
+
+export async function attachTimesheetEvidence(
+  id: number,
+  file: UploadedEvidence | null,
+  actor: Actor,
+): Promise<TimesheetAttachmentView> {
+  if (!file) {
+    throw ApiError.badRequest('Adjunta un archivo de evidencia', { field: 'evidence' });
+  }
+
+  assertEvidenceAllowed(file);
+
+  const record = await loadOwnTimesheet(id, actor);
+  assertEvidenceEditable(record);
+
+  const current = await repository.findTimesheetAttachments(id);
+
+  if (current.length >= MAX_TIMESHEET_ATTACHMENTS) {
+    throw new ApiError(
+      422,
+      `Un timesheet admite como maximo ${MAX_TIMESHEET_ATTACHMENTS} evidencias`,
+      'EVIDENCE_LIMIT',
+      { max: MAX_TIMESHEET_ATTACHMENTS },
+    );
+  }
+
+  const path = timesheetEvidencePath(id, file);
+  await uploadEvidence(path, file);
+
+  try {
+    const created = await repository.insertTimesheetAttachment({
+      timesheetId: id,
+      uploadedBy: actor.id,
+      storagePath: path,
+      fileName: file.originalName,
+      mimeType: file.mimeType,
+      sizeBytes: file.size,
+    });
+
+    logger.info({ timesheetId: id, attachmentId: created.id, actorId: actor.id }, 'Evidencia de timesheet adjunta');
+
+    return toTimesheetAttachmentView(created);
+  } catch (error) {
+    await removeEvidence(path);
+    throw error;
+  }
+}
+
+async function loadTimesheetAttachment(
+  timesheetId: number,
+  attachmentId: number,
+): Promise<repository.TimesheetAttachmentRecord> {
+  const attachment = await repository.findTimesheetAttachmentById(attachmentId);
+
+  if (!attachment || attachment.timesheet_id !== timesheetId) {
+    throw ApiError.notFound('La evidencia no existe');
+  }
+
+  return attachment;
+}
+
+export async function signTimesheetAttachment(
+  timesheetId: number,
+  attachmentId: number,
+): Promise<{ url: string; fileName: string; mimeType: string }> {
+  const attachment = await loadTimesheetAttachment(timesheetId, attachmentId);
+
+  return {
+    url: await signEvidence(attachment.storage_path),
+    fileName: attachment.file_name,
+    mimeType: attachment.mime_type,
+  };
+}
+
+export async function getTimesheetEvidenceLink(
+  id: number,
+  attachmentId: number,
+  actor: Actor,
+): Promise<{ url: string; fileName: string; mimeType: string }> {
+  await loadOwnTimesheet(id, actor);
+  return signTimesheetAttachment(id, attachmentId);
+}
+
+export async function removeTimesheetEvidence(
+  id: number,
+  attachmentId: number,
+  actor: Actor,
+): Promise<void> {
+  const record = await loadOwnTimesheet(id, actor);
+  assertEvidenceEditable(record);
+
+  const attachment = await loadTimesheetAttachment(id, attachmentId);
+
+  await repository.deleteTimesheetAttachment(attachment.id);
+  await removeEvidence(attachment.storage_path);
+
+  logger.info({ timesheetId: id, attachmentId, actorId: actor.id }, 'Evidencia de timesheet eliminada');
 }
 
 export async function listMyTimesheets(
@@ -748,4 +918,65 @@ export async function getTeamSummary(
     pendingReviewCount: summary.openCount,
     approvedCount: summary.approvedCount,
   };
+}
+
+export async function exportTimesheetById(
+  timesheetId: number,
+  format: ExportFormat,
+): Promise<ExportedFile> {
+  const record = await repository.findTimesheetById(timesheetId);
+
+  if (!record) {
+    throw ApiError.notFound('El timesheet no existe');
+  }
+
+  const assignment = await repository.findExportAssignment(record.assignment_id);
+
+  if (!assignment) {
+    throw ApiError.notFound('La asignacion del timesheet no existe');
+  }
+
+  const [days, holidays] = await Promise.all([
+    repository.findDays(record.id),
+    repository.findHolidaysInRange({
+      countryCode: assignment.country_code,
+      from: record.week_start_date,
+      to: record.week_end_date,
+    }),
+  ]);
+  const holidayNames = new Map(holidays.map((holiday) => [holiday.holiday_date, holiday.name]));
+
+  const rows = days.flatMap((day) =>
+    day.activities
+      .slice()
+      .sort((a, b) => a.line_no - b.line_no)
+      .map((activity) => ({
+        date: day.work_date,
+        hours: Number(activity.hours),
+        activity: activity.activity,
+        note: day.note ?? holidayNames.get(day.work_date) ?? null,
+      })),
+  );
+
+  return renderActivityLog(
+    {
+      code: activityLogCode(assignment.start_date, assignment.consultant?.full_name ?? ''),
+      projectName: assignment.project?.project_name ?? '',
+      monthlyHours: Number(assignment.hours_divisor),
+      dailyHours: Number(assignment.daily_hours),
+      periodStart: record.week_start_date,
+      periodEnd: record.week_end_date,
+      rows,
+    },
+    format,
+  );
+}
+
+export async function exportOwnTimesheet(
+  id: number,
+  format: ExportFormat,
+  actor: Actor,
+): Promise<ExportedFile> {
+  await loadOwnTimesheet(id, actor);
+  return exportTimesheetById(id, format);
 }

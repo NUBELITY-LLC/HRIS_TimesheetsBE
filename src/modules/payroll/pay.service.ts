@@ -1,6 +1,7 @@
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { COUNTRY_CODES, type CountryCode } from '../../utils/countries.js';
+import { DEFAULT_RATE_PERIOD, RATE_PERIODS, type RatePeriod } from '../../utils/assignments.js';
 import { hoursToMinutes } from '../timesheets/timesheets.rules.js';
 import * as repository from './pay.repository.js';
 import {
@@ -8,6 +9,7 @@ import {
   CONTRACT_TYPES,
   DEFAULT_PAY_TERMS,
   DEFAULT_PAYROLL_RULES,
+  hourlyRateFor,
   type ContractType,
   type PayBreakdown,
   type PayrollRules,
@@ -39,8 +41,12 @@ function oneOf<T extends string>(values: readonly T[], value: string, fallback: 
   return (values as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
+export function ratePeriodOf(value: string): RatePeriod {
+  return oneOf(RATE_PERIODS, value, DEFAULT_RATE_PERIOD);
+}
+
 export function toPayTermsView(
-  record: Omit<repository.PayTermsRecord, 'pay_rate' | 'currency'>,
+  record: Omit<repository.PayTermsRecord, 'pay_rate' | 'currency' | 'rate_period'>,
 ): PayTermsView {
   return {
     contractType: oneOf(CONTRACT_TYPES, record.contract_type, DEFAULT_PAY_TERMS.contractType),
@@ -53,7 +59,11 @@ export function toPayTermsView(
 }
 
 export function toPayTerms(record: repository.PayTermsRecord): PayTerms {
-  return { payRate: Number(record.pay_rate), ...toPayTermsView(record) };
+  return {
+    payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
+    ...toPayTermsView(record),
+  };
 }
 
 function toPayrollRules(record: repository.PayrollRulesRecord): PayrollRules {
@@ -208,6 +218,7 @@ export type PayAssignmentView = {
   isActive: boolean;
   assignmentCode: string | null;
   payRate: number;
+  ratePeriod: RatePeriod;
   currency: string;
   hourlyRate: number;
   payTerms: PayTermsView;
@@ -226,9 +237,9 @@ function toPayAssignmentView(record: repository.PayAssignmentRecord): PayAssignm
     isActive: record.is_active,
     assignmentCode: record.assignment_code,
     payRate: terms.payRate,
+    ratePeriod: terms.ratePeriod,
     currency: record.currency,
-    hourlyRate:
-      terms.hoursDivisor > 0 ? Number((terms.payRate / terms.hoursDivisor).toFixed(4)) : 0,
+    hourlyRate: hourlyRateFor(terms),
     payTerms: toPayTermsView(record),
     consultant: record.consultant
       ? {

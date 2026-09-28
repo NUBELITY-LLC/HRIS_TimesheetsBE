@@ -4,6 +4,8 @@ import { buildPagination, ok, paginated } from '../../utils/httpResponse.js';
 import { validatedQuery } from '../../middlewares/validate.js';
 import { readEvidence } from '../../middlewares/upload.js';
 import * as approvalsService from './approvals.service.js';
+import { sendExportedFile } from '../timesheets/timesheets.controller.js';
+import type { ExportQuery } from '../timesheets/timesheets.schema.js';
 import type {
   ApproveOnBehalfInput,
   ApproveStepInput,
@@ -81,6 +83,27 @@ export async function getAttachment(req: Request, res: Response): Promise<void> 
   );
 
   ok(res, { evidence });
+}
+
+export async function getTimesheetAttachment(req: Request, res: Response): Promise<void> {
+  const evidence = await approvalsService.getTimesheetAttachmentLink(
+    Number(req.params.id),
+    Number(req.params.attachmentId),
+    requireActor(req),
+  );
+
+  ok(res, { evidence });
+}
+
+export async function exportTimesheet(req: Request, res: Response): Promise<void> {
+  const query = validatedQuery<ExportQuery>(res);
+  const file = await approvalsService.exportApprovalTimesheet(
+    Number(req.params.id),
+    query.format,
+    requireActor(req),
+  );
+
+  sendExportedFile(res, file);
 }
 
 export async function listDecisions(req: Request, res: Response): Promise<void> {

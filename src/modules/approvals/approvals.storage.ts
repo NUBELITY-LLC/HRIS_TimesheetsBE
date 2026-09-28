@@ -49,6 +49,11 @@ export function evidencePath(timesheetId: number, approvalId: number, file: Uplo
   return `${timesheetId}/${approvalId}/${randomUUID()}.${extension}`;
 }
 
+export function timesheetEvidencePath(timesheetId: number, file: UploadedEvidence): string {
+  const extension = EXTENSIONS[file.mimeType] ?? 'bin';
+  return `${timesheetId}/owner/${randomUUID()}.${extension}`;
+}
+
 export async function uploadEvidence(path: string, file: UploadedEvidence): Promise<void> {
   const { error } = await supabase.storage
     .from(EVIDENCE_BUCKET)

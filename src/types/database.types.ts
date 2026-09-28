@@ -67,6 +67,7 @@ type ProjectAssignmentsRow = {
   consultant_id: number;
   pay_rate: number;
   currency: string;
+  rate_period: string;
   start_date: string;
   end_date: string | null;
   is_active: boolean;
@@ -176,6 +177,7 @@ type TimesheetApprovalsRow = {
   review_no: number;
   comments: string | null;
   decided_at: string | null;
+  decided_by: number | null;
 };
 
 type TimesheetEventsRow = {
@@ -222,6 +224,8 @@ type ApprovalAttachmentsRow = {
   size_bytes: number;
   created_at: string;
 };
+
+type TimesheetAttachmentsRow = Omit<ApprovalAttachmentsRow, 'approval_id'>;
 
 type NotificationsRow = {
   id: number;
@@ -310,6 +314,7 @@ export type Database = {
         Insert: InsertOf<
           ProjectAssignmentsRow,
           | 'currency'
+          | 'rate_period'
           | 'end_date'
           | 'is_active'
           | 'assignment_code'
@@ -397,12 +402,14 @@ export type Database = {
           | 'review_no'
           | 'comments'
           | 'decided_at'
+          | 'decided_by'
         >;
         Update: Partial<TimesheetApprovalsRow>;
         Relationships: [
           ForeignKey<'timesheet_id', 'TIMESHEETS'>,
           ForeignKey<'step_id', 'PROJECT_APPROVAL_STEPS'>,
           ForeignKey<'approver_id', 'USERS'>,
+          ForeignKey<'decided_by', 'USERS'>,
         ];
       };
       TIMESHEET_EVENTS: {
@@ -450,6 +457,15 @@ export type Database = {
         Update: Partial<ApprovalAttachmentsRow>;
         Relationships: [
           ForeignKey<'approval_id', 'TIMESHEET_APPROVALS'>,
+          ForeignKey<'timesheet_id', 'TIMESHEETS'>,
+          ForeignKey<'uploaded_by', 'USERS'>,
+        ];
+      };
+      TIMESHEET_ATTACHMENTS: {
+        Row: TimesheetAttachmentsRow;
+        Insert: InsertOf<TimesheetAttachmentsRow, 'created_at'>;
+        Update: Partial<TimesheetAttachmentsRow>;
+        Relationships: [
           ForeignKey<'timesheet_id', 'TIMESHEETS'>,
           ForeignKey<'uploaded_by', 'USERS'>,
         ];

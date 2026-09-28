@@ -5,7 +5,12 @@ import { PERMISSION_TIMESHEETS_APPROVE } from '../../utils/permissions.js';
 import { ASSIGNABLE_ROLES, PROJECT_MANAGER_ROLES } from '../../utils/roles.js';
 import { PROJECT_STATUS_CLOSED, type ProjectStatus } from '../../utils/projects.js';
 import * as clientsRepository from '../clients/clients.repository.js';
-import { toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import { ratePeriodOf, toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import {
+  DEFAULT_CURRENCY,
+  DEFAULT_RATE_PERIOD,
+  type RatePeriod,
+} from '../../utils/assignments.js';
 import { queueNotificationEmails } from '../notifications/notifications.emails.js';
 import * as repository from './projects.repository.js';
 import type {
@@ -53,6 +58,7 @@ export type AssignmentView = {
   id: number;
   projectId: number;
   payRate: number;
+  ratePeriod: RatePeriod;
   currency: string;
   startDate: string;
   endDate: string | null;
@@ -126,6 +132,7 @@ function toAssignmentView(record: AssignmentRecord): AssignmentView {
     id: record.id,
     projectId: record.project_id,
     payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
     currency: record.currency,
     startDate: record.start_date,
     endDate: record.end_date,
@@ -379,13 +386,15 @@ export function assertWithinProject(
   endDate: string | null,
 ): void {
   if (project.start_date && startDate < project.start_date) {
-    throw ApiError.unprocessable('La asignacion inicia antes que el proyecto', {
+    throw new ApiError(422, 'La asignacion inicia antes que el proyecto', 'ASSIGNMENT_BEFORE_PROJECT', {
+      field: 'startDate',
       projectStartDate: project.start_date,
     });
   }
 
   if (project.end_date && endDate && endDate > project.end_date) {
-    throw ApiError.unprocessable('La asignacion termina despues que el proyecto', {
+    throw new ApiError(422, 'La asignacion termina despues que el proyecto', 'ASSIGNMENT_AFTER_PROJECT', {
+      field: 'endDate',
       projectEndDate: project.end_date,
     });
   }
@@ -413,7 +422,8 @@ export async function assignConsultant(
 
   await resolveConsultant(input.consultantId);
 
-  assertWithinProject(project, input.startDate, input.endDate ?? null);
+  const endDate = input.endDate ?? project.end_date ?? null;
+  assertWithinProject(project, input.startDate, endDate);
 
   const existing = await repository.findAssignmentsByProject(projectId);
   const overlapping = existing.find(
@@ -421,7 +431,7 @@ export async function assignConsultant(
       assignment.consultant_id === input.consultantId &&
       assignment.is_active &&
       (assignment.end_date === null || assignment.end_date >= input.startDate) &&
-      (input.endDate == null || input.endDate >= assignment.start_date),
+      (endDate === null || endDate >= assignment.start_date),
   );
 
   if (overlapping) {
@@ -432,9 +442,11 @@ export async function assignConsultant(
     project_id: projectId,
     consultant_id: input.consultantId,
     pay_rate: input.payRate,
-    currency: input.currency ?? 'USD',
+    currency: input.currency ?? DEFAULT_CURRENCY,
+    rate_period: input.ratePeriod ?? DEFAULT_RATE_PERIOD,
+    ...(input.contractType ? { contract_type: input.contractType } : {}),
     start_date: input.startDate,
-    end_date: input.endDate ?? null,
+    end_date: endDate,
     is_active: true,
     assignment_code: input.assignmentCode ?? null,
   });
@@ -476,6 +488,8 @@ export async function updateAssignment(
 
   if (input.payRate !== undefined) patch.pay_rate = input.payRate;
   if (input.currency !== undefined) patch.currency = input.currency;
+  if (input.ratePeriod !== undefined) patch.rate_period = input.ratePeriod;
+  if (input.contractType !== undefined) patch.contract_type = input.contractType;
   if (input.startDate !== undefined) patch.start_date = input.startDate;
   if (input.endDate !== undefined) patch.end_date = input.endDate;
   if (input.isActive !== undefined) patch.is_active = input.isActive;
@@ -608,32 +622,38 @@ async function buildApprovalStepPayload(
   step: ApprovalStepInput,
   index: number,
   companyId: number,
-): Promise<repository.ApprovalStepPayload> {
+): Promise<{ row: repository.ApprovalStepPayload; approverUserId: number | null }> {
   const seq = index + 1;
 
   if (step.approverType === 'USER') {
     const approver = await resolveNominatedApprover(step.userId, `steps.${index}.userId`);
 
     return {
-      seq,
-      approverType: 'USER',
-      userId: approver.id,
-      roleCode: null,
-      clientId: null,
-      approverEmail: null,
-      approverName: step.approverName ?? approver.full_name,
+      row: {
+        seq,
+        approverType: 'USER',
+        userId: approver.id,
+        roleCode: null,
+        clientId: null,
+        approverEmail: null,
+        approverName: step.approverName ?? approver.full_name,
+      },
+      approverUserId: approver.id,
     };
   }
 
   if (step.approverType === 'ROLE') {
     return {
-      seq,
-      approverType: 'ROLE',
-      userId: null,
-      roleCode: step.roleCode,
-      clientId: null,
-      approverEmail: null,
-      approverName: step.approverName ?? null,
+      row: {
+        seq,
+        approverType: 'ROLE',
+        userId: null,
+        roleCode: step.roleCode,
+        clientId: null,
+        approverEmail: null,
+        approverName: step.approverName ?? null,
+      },
+      approverUserId: null,
     };
   }
 
@@ -644,13 +664,16 @@ async function buildApprovalStepPayload(
   );
 
   return {
-    seq,
-    approverType: 'CLIENT_EMAIL',
-    userId: null,
-    roleCode: null,
-    clientId: client.id,
-    approverEmail: (client.contact_email as string).toLowerCase(),
-    approverName: client.client_name,
+    row: {
+      seq,
+      approverType: 'CLIENT_EMAIL',
+      userId: null,
+      roleCode: null,
+      clientId: client.id,
+      approverEmail: (client.contact_email as string).toLowerCase(),
+      approverName: client.client_name,
+    },
+    approverUserId: client.user_id,
   };
 }
 
@@ -672,9 +695,14 @@ export async function replaceApprovalSteps(
 
   const payload: repository.ApprovalStepPayload[] = [];
   const seen = new Map<string, number>();
+  const approverUserIds = new Set<number>();
 
   for (const [index, step] of input.steps.entries()) {
-    const row = await buildApprovalStepPayload(step, index, projectClient.company_id);
+    const { row, approverUserId } = await buildApprovalStepPayload(
+      step,
+      index,
+      projectClient.company_id,
+    );
     const key = approverKey(row);
     const duplicateOf = seen.get(key);
 
@@ -687,12 +715,20 @@ export async function replaceApprovalSteps(
 
     seen.set(key, index);
     payload.push(row);
+    if (approverUserId !== null) approverUserIds.add(approverUserId);
   }
 
   if (!seen.has(`CLIENT:${projectClient.id}`)) {
     throw ApiError.unprocessable(
       `El cliente del proyecto (${projectClient.client_name}) debe ser uno de los aprobadores`,
       { code: 'PROJECT_CLIENT_LANE_REQUIRED', clientId: projectClient.id },
+    );
+  }
+
+  if (project.manager_id !== null && !approverUserIds.has(project.manager_id)) {
+    throw ApiError.unprocessable(
+      `El manager del proyecto (${project.manager?.full_name ?? project.manager_id}) debe ser uno de los aprobadores`,
+      { code: 'PROJECT_MANAGER_LANE_REQUIRED', managerId: project.manager_id },
     );
   }
 

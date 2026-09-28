@@ -75,7 +75,9 @@ export type ApprovalRecord = {
   status: ApprovalStatus;
   comments: string | null;
   decided_at: string | null;
+  decided_by: number | null;
   approver: { id: number; full_name: string } | null;
+  decider: { id: number; full_name: string } | null;
 };
 
 export type ListTimesheetsFilters = {
@@ -98,7 +100,9 @@ const TIMESHEET_COLUMNS =
 
 const APPROVAL_COLUMNS =
   'id, seq, cycle_no, approver_type, approver_id, approver_role_code, approver_email, ' +
-  'approver_name, status, comments, decided_at, approver:USERS(id, full_name)';
+  'approver_name, status, comments, decided_at, decided_by, ' +
+  'approver:USERS!TIMESHEET_APPROVALS_approver_id_fkey(id, full_name), ' +
+  'decider:USERS!TIMESHEET_APPROVALS_decided_by_fkey(id, full_name)';
 
 const OPEN_STATUSES: TimesheetStatus[] = ['SUBMITTED', 'IN_REVIEW'];
 const SETTLED_STATUSES: TimesheetStatus[] = ['APPROVED', 'CLOSED', 'PAID'];
@@ -454,4 +458,123 @@ export async function findTeamSummary(params: {
     approvedCount: Number(payload.approvedCount ?? 0),
     openCount: Number(payload.openCount ?? 0),
   };
+}
+
+export type TimesheetAttachmentRecord = {
+  id: number;
+  timesheet_id: number;
+  uploaded_by: number;
+  storage_path: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: string;
+  uploader: { id: number; full_name: string } | null;
+};
+
+const TIMESHEET_ATTACHMENT_COLUMNS =
+  'id, timesheet_id, uploaded_by, storage_path, file_name, mime_type, size_bytes, ' +
+  'created_at, uploader:USERS(id, full_name)';
+
+export async function findTimesheetAttachments(
+  timesheetId: number,
+): Promise<TimesheetAttachmentRecord[]> {
+  const { data, error } = await supabase
+    .from('TIMESHEET_ATTACHMENTS')
+    .select(TIMESHEET_ATTACHMENT_COLUMNS)
+    .eq('timesheet_id', timesheetId)
+    .order('id', { ascending: true });
+
+  if (error) fail('findTimesheetAttachments', error);
+
+  return (data ?? []) as unknown as TimesheetAttachmentRecord[];
+}
+
+export async function findTimesheetAttachmentById(
+  id: number,
+): Promise<TimesheetAttachmentRecord | null> {
+  const { data, error } = await supabase
+    .from('TIMESHEET_ATTACHMENTS')
+    .select(TIMESHEET_ATTACHMENT_COLUMNS)
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) fail('findTimesheetAttachmentById', error);
+
+  return (data as unknown as TimesheetAttachmentRecord | null) ?? null;
+}
+
+export async function insertTimesheetAttachment(params: {
+  timesheetId: number;
+  uploadedBy: number;
+  storagePath: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+}): Promise<TimesheetAttachmentRecord> {
+  const { data, error } = await supabase
+    .from('TIMESHEET_ATTACHMENTS')
+    .insert({
+      timesheet_id: params.timesheetId,
+      uploaded_by: params.uploadedBy,
+      storage_path: params.storagePath,
+      file_name: params.fileName,
+      mime_type: params.mimeType,
+      size_bytes: params.sizeBytes,
+    })
+    .select(TIMESHEET_ATTACHMENT_COLUMNS)
+    .single();
+
+  if (error) fail('insertTimesheetAttachment', error);
+
+  return data as unknown as TimesheetAttachmentRecord;
+}
+
+export async function deleteTimesheetAttachment(id: number): Promise<void> {
+  const { error } = await supabase.from('TIMESHEET_ATTACHMENTS').delete().eq('id', id);
+
+  if (error) fail('deleteTimesheetAttachment', error);
+}
+
+export type ExportAssignmentRecord = {
+  start_date: string;
+  country_code: string;
+  hours_divisor: number;
+  daily_hours: number;
+  consultant: { full_name: string } | null;
+  project: { project_name: string } | null;
+};
+
+export async function findExportAssignment(
+  assignmentId: number,
+): Promise<ExportAssignmentRecord | null> {
+  const { data, error } = await supabase
+    .from('PROJECT_ASSIGNMENTS')
+    .select(
+      'start_date, country_code, hours_divisor, daily_hours, ' +
+        'consultant:USERS!inner(full_name), project:PROJECTS!inner(project_name)',
+    )
+    .eq('id', assignmentId)
+    .maybeSingle();
+
+  if (error) fail('findExportAssignment', error);
+
+  return (data as unknown as ExportAssignmentRecord | null) ?? null;
+}
+
+export async function findHolidaysInRange(params: {
+  countryCode: string;
+  from: string;
+  to: string;
+}): Promise<{ holiday_date: string; name: string }[]> {
+  const { data, error } = await supabase
+    .from('HOLIDAYS')
+    .select('holiday_date, name')
+    .eq('country_code', params.countryCode)
+    .gte('holiday_date', params.from)
+    .lte('holiday_date', params.to);
+
+  if (error) fail('findHolidaysInRange', error);
+
+  return data ?? [];
 }

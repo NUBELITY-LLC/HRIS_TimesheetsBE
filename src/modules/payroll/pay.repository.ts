@@ -6,6 +6,7 @@ import type { PayTermsColumns } from './pay.schema.js';
 export type PayTermsRecord = {
   pay_rate: number;
   currency: string;
+  rate_period: string;
   contract_type: string;
   country_code: string;
   hours_divisor: number;
@@ -23,7 +24,7 @@ export type TimesheetPayRecord = {
 };
 
 export const PAY_TERMS_COLUMNS =
-  'pay_rate, currency, contract_type, country_code, hours_divisor, daily_hours, ' +
+  'pay_rate, currency, rate_period, contract_type, country_code, hours_divisor, daily_hours, ' +
   'overtime_multiplier, holiday_multiplier';
 
 function fail(operation: string, error: unknown): never {

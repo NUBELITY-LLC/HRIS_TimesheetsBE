@@ -35,6 +35,7 @@ export type AssignmentRecord = {
   consultant_id: number;
   pay_rate: number;
   currency: string;
+  rate_period: string;
   start_date: string;
   end_date: string | null;
   is_active: boolean;
@@ -54,6 +55,7 @@ export type ConsultantAssignmentRecord = {
   consultant_id: number;
   pay_rate: number;
   currency: string;
+  rate_period: string;
   start_date: string;
   end_date: string | null;
   is_active: boolean;
@@ -106,6 +108,7 @@ export type NewAssignmentRow = {
   consultant_id: number;
   pay_rate: number;
   currency: string;
+  rate_period: string;
   start_date: string;
   end_date: string | null;
   is_active: boolean;
@@ -139,13 +142,13 @@ const PAY_TERMS_SELECT =
   'holiday_multiplier, ';
 
 const ASSIGNMENT_COLUMNS =
-  'id, project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active, ' +
+  'id, project_id, consultant_id, pay_rate, currency, rate_period, start_date, end_date, is_active, ' +
   'assignment_code, ' +
   PAY_TERMS_SELECT +
   `consultant:USERS!inner(${USER_REF_COLUMNS})`;
 
 const CONSULTANT_ASSIGNMENT_COLUMNS =
-  'id, project_id, consultant_id, pay_rate, currency, start_date, end_date, is_active, ' +
+  'id, project_id, consultant_id, pay_rate, currency, rate_period, start_date, end_date, is_active, ' +
   'assignment_code, ' +
   PAY_TERMS_SELECT +
   'project:PROJECTS!inner(id, project_name, code, start_date, end_date, status, ' +

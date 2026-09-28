@@ -2,6 +2,7 @@ export const CONTRACT_TYPES = ['CONTRACTOR', 'PAYROLL'] as const;
 export type ContractType = (typeof CONTRACT_TYPES)[number];
 
 import type { CountryCode } from '../../utils/countries.js';
+import type { RatePeriod } from '../../utils/assignments.js';
 
 export const PAY_BUCKETS = ['REGULAR', 'SUNDAY', 'OVERTIME', 'OVERTIME_TRIPLE', 'HOLIDAY'] as const;
 export type PayBucket = (typeof PAY_BUCKETS)[number];
@@ -33,6 +34,7 @@ export const DEFAULT_PAYROLL_RULES: PayrollRules = {
 
 export type PayTerms = {
   payRate: number;
+  ratePeriod: RatePeriod;
   contractType: ContractType;
   countryCode: CountryCode;
   hoursDivisor: number;
@@ -83,9 +85,17 @@ function isSunday(isoDate: string): boolean {
   return new Date(`${isoDate}T00:00:00.000Z`).getUTCDay() === 0;
 }
 
-export function hourlyRateFor(terms: Pick<PayTerms, 'payRate' | 'hoursDivisor'>): number {
+const MONTHS_PER_YEAR = 12;
+
+export function hourlyRateFor(
+  terms: Pick<PayTerms, 'payRate' | 'ratePeriod' | 'hoursDivisor'>,
+): number {
+  if (terms.ratePeriod === 'HOUR') return terms.payRate;
   if (terms.hoursDivisor <= 0) return 0;
-  return Number((terms.payRate / terms.hoursDivisor).toFixed(4));
+
+  const divisor =
+    terms.ratePeriod === 'YEAR' ? terms.hoursDivisor * MONTHS_PER_YEAR : terms.hoursDivisor;
+  return Number((terms.payRate / divisor).toFixed(4));
 }
 
 function contractorPortions(
