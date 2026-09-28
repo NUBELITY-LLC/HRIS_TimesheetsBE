@@ -641,12 +641,19 @@ export async function exportApprovalTimesheet(
   actor: Actor,
 ): Promise<ExportedFile> {
   const { context } = await loadApprovalContext(approvalId, actor);
+  const timesheet = context.timesheet!;
 
-  if (actor.roleCode === ROLE_FINANCE) {
-    throw ApiError.forbidden('Tu rol no puede descargar el detalle de actividades');
+  if (actor.roleCode !== ROLE_FINANCE) {
+    return exportTimesheetById(timesheet.id, format);
   }
 
-  return exportTimesheetById(context.timesheet!.id, format);
+  const pay = (await payFor([timesheet.id], actor)).get(timesheet.id);
+
+  return exportTimesheetById(timesheet.id, format, {
+    currency: timesheet.assignment?.currency ?? '',
+    hourlyRate: pay?.hourlyRate ?? 0,
+    amount: pay?.amount ?? 0,
+  });
 }
 
 export async function getTimesheetAttachmentLink(

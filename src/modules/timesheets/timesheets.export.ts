@@ -11,6 +11,12 @@ export type ActivityLogRow = {
   note: string | null;
 };
 
+export type ActivityLogCosts = {
+  currency: string;
+  hourlyRate: number;
+  amount: number;
+};
+
 export type ActivityLog = {
   code: string;
   projectName: string;
@@ -19,6 +25,7 @@ export type ActivityLog = {
   periodStart: string;
   periodEnd: string;
   rows: ActivityLogRow[];
+  costs?: ActivityLogCosts | null;
 };
 
 export type ExportedFile = {
@@ -40,9 +47,49 @@ const COLORS = {
   ink: '1F2937',
 };
 
-const HEADERS = ['Resource', 'Period', 'Date', 'Day', 'Hours', 'Activity', 'Notes'];
-const COLUMN_WIDTHS = [24, 25, 13, 14, 9, 88.29, 36.71];
-const PDF_COLUMN_WIDTHS = [108, 112, 56, 58, 34, 0, 130];
+type Layout = {
+  title: string;
+  headers: string[];
+  widths: number[];
+  pdfWidths: number[];
+  lastColumn: string;
+};
+
+const DETAIL_LAYOUT: Layout = {
+  title: 'ACTIVITY LOG',
+  headers: ['Resource', 'Period', 'Date', 'Day', 'Hours', 'Activity', 'Notes'],
+  widths: [24, 25, 13, 14, 9, 88.29, 36.71],
+  pdfWidths: [108, 112, 56, 58, 34, 0, 130],
+  lastColumn: 'G',
+};
+
+const SUMMARY_LAYOUT: Layout = {
+  title: 'HOURS SUMMARY',
+  headers: ['Resource', 'Period', 'Date', 'Day', 'Hours'],
+  widths: [24, 36, 16, 16, 18],
+  pdfWidths: [0, 200, 110, 110, 80],
+  lastColumn: 'E',
+};
+
+function layoutOf(log: ActivityLog): Layout {
+  return log.costs ? SUMMARY_LAYOUT : DETAIL_LAYOUT;
+}
+
+function formatAmount(value: number, currency: string): string {
+  return `${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+}
+
+function rowValues(log: ActivityLog, entry: ActivityLogRow): string[] {
+  const base = [
+    log.code,
+    periodLabel(log),
+    displayDate(entry.date),
+    weekday(entry.date),
+    String(entry.hours),
+  ];
+
+  return log.costs ? base : [...base, entry.activity, entry.note ?? ''];
+}
 
 export function nameInitials(fullName: string): string {
   return fullName
@@ -102,7 +149,8 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
     },
   });
 
-  sheet.columns = COLUMN_WIDTHS.map((width) => ({ width }));
+  const layout = layoutOf(log);
+  sheet.columns = layout.widths.map((width) => ({ width }));
 
   const rule: Partial<ExcelJS.Borders> = {
     bottom: { style: 'thin', color: { argb: `FF${COLORS.rule}` } },
@@ -116,16 +164,16 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   const whiteBold = { bold: true, color: { argb: `FF${COLORS.white}` }, name: 'Calibri' };
 
   const styleRow = (row: ExcelJS.Row) => {
-    for (let column = 1; column <= HEADERS.length; column += 1) {
+    for (let column = 1; column <= layout.headers.length; column += 1) {
       const cell = row.getCell(column);
       cell.border = rule;
       cell.alignment = wrapTop;
     }
   };
 
-  sheet.mergeCells('A1:G1');
+  sheet.mergeCells(`A1:${layout.lastColumn}1`);
   const title = sheet.getCell('A1');
-  title.value = `ACTIVITY LOG — ${log.code}`;
+  title.value = `${layout.title} — ${log.code}`;
   title.font = { ...whiteBold, size: 16 };
   title.fill = fill(COLORS.title);
   title.alignment = { horizontal: 'center', vertical: 'top', wrapText: true };
@@ -146,9 +194,22 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   workday.getCell(2).value = workdayLabel(log);
   workday.getCell(1).font = { bold: true };
 
-  styleRow(sheet.getRow(4));
+  const costs = sheet.getRow(4);
+  styleRow(costs);
 
-  sheet.mergeCells('A5:G5');
+  if (log.costs) {
+    const amountFormat = `#,##0.00 "${log.costs.currency}"`;
+    workday.getCell(4).value = 'Hourly cost';
+    workday.getCell(4).font = { bold: true };
+    workday.getCell(5).value = log.costs.hourlyRate;
+    workday.getCell(5).numFmt = amountFormat;
+    costs.getCell(4).value = 'Total cost';
+    costs.getCell(4).font = { bold: true };
+    costs.getCell(5).value = log.costs.amount;
+    costs.getCell(5).numFmt = amountFormat;
+  }
+
+  sheet.mergeCells(`A5:${layout.lastColumn}5`);
   const period = sheet.getCell('A5');
   period.value = periodTitle(log);
   period.font = whiteBold;
@@ -157,7 +218,7 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   period.border = rule;
 
   const header = sheet.getRow(6);
-  HEADERS.forEach((label, index) => {
+  layout.headers.forEach((label, index) => {
     const cell = header.getCell(index + 1);
     cell.value = label;
     cell.font = whiteBold;
@@ -176,8 +237,10 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
     row.getCell(3).numFmt = 'mm/dd/yyyy';
     row.getCell(4).value = weekday(entry.date);
     row.getCell(5).value = entry.hours;
-    row.getCell(6).value = entry.activity;
-    row.getCell(7).value = entry.note ?? null;
+    if (!log.costs) {
+      row.getCell(6).value = entry.activity;
+      row.getCell(7).value = entry.note ?? null;
+    }
   });
 
   const lastDataRow = firstDataRow + Math.max(log.rows.length, 1) - 1;
@@ -205,8 +268,9 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
     const left = doc.page.margins.left;
     const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
     const bottom = doc.page.height - doc.page.margins.bottom;
-    const fixed = PDF_COLUMN_WIDTHS.reduce((sum, value) => sum + value, 0);
-    const columns = PDF_COLUMN_WIDTHS.map((value) => value || width - fixed);
+    const layout = layoutOf(log);
+    const fixed = layout.pdfWidths.reduce((sum, value) => sum + value, 0);
+    const columns = layout.pdfWidths.map((value) => value || width - fixed);
     const padding = 4;
     const fontSize = 8;
 
@@ -266,9 +330,10 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
       doc.x = left;
     };
 
-    const header = () => place(cells(HEADERS, { bold: true, fillColor: COLORS.header }));
+    const header = () =>
+      place(cells(layout.headers, { bold: true, fillColor: COLORS.header }));
 
-    band(`ACTIVITY LOG — ${log.code}`, COLORS.title, 14, 'center');
+    band(`${layout.title} — ${log.code}`, COLORS.title, 14, 'center');
     doc.moveDown(0.6);
 
     doc.fillColor(`#${COLORS.ink}`).fontSize(9);
@@ -276,6 +341,12 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
       ['Project', log.projectName],
       ['Monthly hours', String(log.monthlyHours)],
       ['Schedule', workdayLabel(log)],
+      ...(log.costs
+        ? ([
+            ['Hourly cost', formatAmount(log.costs.hourlyRate, log.costs.currency)],
+            ['Total cost', formatAmount(log.costs.amount, log.costs.currency)],
+          ] as [string, string][])
+        : []),
     ];
     for (const [label, value] of info) {
       const y = doc.y;
@@ -292,18 +363,7 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
     header();
 
     for (const entry of log.rows) {
-      const row = cells(
-        [
-          log.code,
-          periodLabel(log),
-          displayDate(entry.date),
-          weekday(entry.date),
-          String(entry.hours),
-          entry.activity,
-          entry.note ?? '',
-        ],
-        {},
-      );
+      const row = cells(rowValues(log, entry), {});
 
       if (doc.y + row.height > bottom) {
         doc.addPage();
@@ -313,7 +373,12 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
       place(row);
     }
 
-    const total = cells(['', '', '', 'TOTAL', String(totalHours(log)), '', ''], { bold: true });
+    const total = cells(
+      layout.headers.map((_, index) =>
+        index === 3 ? 'TOTAL' : index === 4 ? String(totalHours(log)) : '',
+      ),
+      { bold: true },
+    );
     if (doc.y + total.height > bottom) doc.addPage();
     place(total);
 

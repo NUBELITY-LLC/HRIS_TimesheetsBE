@@ -9,6 +9,8 @@ import * as repository from './timesheets.repository.js';
 import {
   activityLogCode,
   renderActivityLog,
+  type ActivityLogCosts,
+  type ActivityLogRow,
   type ExportFormat,
   type ExportedFile,
 } from './timesheets.export.js';
@@ -920,9 +922,20 @@ export async function getTeamSummary(
   };
 }
 
+function hoursPerDay(rows: ActivityLogRow[]): ActivityLogRow[] {
+  const byDate = new Map<string, number>();
+
+  for (const row of rows) {
+    byDate.set(row.date, (byDate.get(row.date) ?? 0) + row.hours);
+  }
+
+  return [...byDate].map(([date, hours]) => ({ date, hours, activity: '', note: null }));
+}
+
 export async function exportTimesheetById(
   timesheetId: number,
   format: ExportFormat,
+  costs: ActivityLogCosts | null = null,
 ): Promise<ExportedFile> {
   const record = await repository.findTimesheetById(timesheetId);
 
@@ -966,7 +979,8 @@ export async function exportTimesheetById(
       dailyHours: Number(assignment.daily_hours),
       periodStart: record.week_start_date,
       periodEnd: record.week_end_date,
-      rows,
+      rows: costs ? hoursPerDay(rows) : rows,
+      costs,
     },
     format,
   );
