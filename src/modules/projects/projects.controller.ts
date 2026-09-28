@@ -4,6 +4,7 @@ import { buildPagination, created, ok, paginated } from '../../utils/httpRespons
 import { validatedQuery } from '../../middlewares/validate.js';
 import * as projectsService from './projects.service.js';
 import type {
+  CreateRateChangeInput,
   CloseProjectInput,
   CreateAssignmentInput,
   CreateProjectInput,
@@ -116,4 +117,26 @@ export async function replaceApprovalSteps(req: Request, res: Response): Promise
   );
 
   ok(res, workflow);
+}
+
+export async function addRateChange(req: Request, res: Response): Promise<void> {
+  const assignment = await projectsService.addRateChange(
+    Number(req.params.id),
+    Number(req.params.assignmentId),
+    req.body as CreateRateChangeInput,
+    requireActor(req),
+  );
+
+  created(res, { assignment });
+}
+
+export async function removeRateChange(req: Request, res: Response): Promise<void> {
+  const assignment = await projectsService.removeRateChange(
+    Number(req.params.id),
+    Number(req.params.assignmentId),
+    Number(req.params.rateId),
+    requireActor(req),
+  );
+
+  ok(res, { assignment });
 }

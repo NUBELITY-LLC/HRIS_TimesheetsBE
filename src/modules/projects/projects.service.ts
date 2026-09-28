@@ -6,6 +6,7 @@ import { ASSIGNABLE_ROLES, PROJECT_MANAGER_ROLES } from '../../utils/roles.js';
 import { PROJECT_STATUS_CLOSED, type ProjectStatus } from '../../utils/projects.js';
 import * as clientsRepository from '../clients/clients.repository.js';
 import { ratePeriodOf, toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import * as payRepository from '../payroll/pay.repository.js';
 import {
   DEFAULT_CURRENCY,
   DEFAULT_RATE_PERIOD,
@@ -26,6 +27,7 @@ import type {
   CloseProjectInput,
   CreateAssignmentInput,
   CreateProjectInput,
+  CreateRateChangeInput,
   ListProjectsQuery,
   ReplaceApprovalStepsInput,
   UpdateAssignmentInput,
@@ -65,7 +67,15 @@ export type AssignmentView = {
   isActive: boolean;
   assignmentCode: string | null;
   payTerms: PayTermsView;
+  rateChanges: RateChangeView[];
   consultant: PersonView | null;
+};
+
+export type RateChangeView = {
+  id: number;
+  effectiveFrom: string;
+  payRate: number;
+  ratePeriod: RatePeriod;
 };
 
 export type ApprovalClientView = {
@@ -139,7 +149,19 @@ function toAssignmentView(record: AssignmentRecord): AssignmentView {
     isActive: record.is_active,
     assignmentCode: record.assignment_code,
     payTerms: toPayTermsView(record),
+    rateChanges: (record.rate_changes ?? [])
+      .map(toRateChangeView)
+      .sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom)),
     consultant: toPersonView(record.consultant),
+  };
+}
+
+export function toRateChangeView(record: payRepository.RateChangeRecord): RateChangeView {
+  return {
+    id: record.id,
+    effectiveFrom: record.effective_from,
+    payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
   };
 }
 
@@ -784,4 +806,69 @@ export async function reopenProject(projectId: number, actor: Actor): Promise<Pr
   logger.info({ projectId, reopenedBy: actor.id }, 'Proyecto reabierto');
 
   return toProjectView(await loadProject(projectId));
+}
+
+export async function addRateChange(
+  projectId: number,
+  assignmentId: number,
+  input: CreateRateChangeInput,
+  actor: Actor,
+): Promise<AssignmentView> {
+  const project = await loadProject(projectId);
+  assertProjectOpen(project, 'sus asignaciones ya no se editan');
+  const assignment = await loadProjectAssignment(projectId, assignmentId);
+
+  if (input.effectiveFrom <= assignment.start_date) {
+    throw new ApiError(
+      422,
+      'El cambio de tarifa debe iniciar despues del inicio de la asignacion',
+      'RATE_CHANGE_BEFORE_ASSIGNMENT',
+      { field: 'effectiveFrom', assignmentStartDate: assignment.start_date },
+    );
+  }
+
+  if (assignment.end_date && input.effectiveFrom > assignment.end_date) {
+    throw new ApiError(
+      422,
+      'El cambio de tarifa no puede iniciar despues del fin de la asignacion',
+      'RATE_CHANGE_AFTER_ASSIGNMENT',
+      { field: 'effectiveFrom', assignmentEndDate: assignment.end_date },
+    );
+  }
+
+  await payRepository.insertRateChange({
+    assignment_id: assignmentId,
+    effective_from: input.effectiveFrom,
+    pay_rate: input.payRate,
+    rate_period: input.ratePeriod ?? assignment.rate_period,
+    created_by: actor.id,
+  });
+
+  logger.info(
+    { projectId, assignmentId, effectiveFrom: input.effectiveFrom, createdBy: actor.id },
+    'Cambio de tarifa registrado en la asignacion',
+  );
+
+  return toAssignmentView(await loadProjectAssignment(projectId, assignmentId));
+}
+
+export async function removeRateChange(
+  projectId: number,
+  assignmentId: number,
+  rateId: number,
+  actor: Actor,
+): Promise<AssignmentView> {
+  const project = await loadProject(projectId);
+  assertProjectOpen(project, 'sus asignaciones ya no se editan');
+  await loadProjectAssignment(projectId, assignmentId);
+
+  const removed = await payRepository.deleteRateChange(rateId, assignmentId);
+
+  if (!removed) {
+    throw ApiError.notFound('El cambio de tarifa no existe en esta asignacion');
+  }
+
+  logger.info({ projectId, assignmentId, rateId, removedBy: actor.id }, 'Cambio de tarifa eliminado');
+
+  return toAssignmentView(await loadProjectAssignment(projectId, assignmentId));
 }

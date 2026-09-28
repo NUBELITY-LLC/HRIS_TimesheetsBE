@@ -4,7 +4,12 @@ import { logger } from '../../config/logger.js';
 import { ROLE_EXTERNAL_MANAGER, ROLE_FINANCE } from '../../utils/roles.js';
 import { queueNotificationEmails } from '../notifications/notifications.emails.js';
 import { deliverApprovalRequests } from '../notifications/notifications.mailer.js';
-import { payForTimesheets, toPaySummary, type PaySummaryView } from '../payroll/pay.service.js';
+import {
+  freezeTimesheetPay,
+  payForTimesheets,
+  toPaySummary,
+  type PaySummaryView,
+} from '../payroll/pay.service.js';
 import type { PayBreakdown } from '../payroll/pay.rules.js';
 import { hoursToMinutes } from '../timesheets/timesheets.rules.js';
 import {
@@ -297,6 +302,8 @@ export async function decideStep(
       })
     : null;
 
+  if (result.outcome === 'COMPLETED') await freezeTimesheetPay(result.timesheetId);
+
   const delivery = await deliverApprovalRequests(result.emailRequests);
   queueNotificationEmails({ timesheetId: result.timesheetId });
 
@@ -375,6 +382,8 @@ export async function approveOnBehalf(
         file: evidence,
       })
     : null;
+
+  if (result.completed) await freezeTimesheetPay(result.timesheetId);
 
   const delivery = await deliverApprovalRequests(result.emailRequests);
   queueNotificationEmails({ timesheetId: result.timesheetId });
@@ -651,8 +660,14 @@ export async function exportApprovalTimesheet(
 
   return exportTimesheetById(timesheet.id, format, {
     currency: timesheet.assignment?.currency ?? '',
-    hourlyRate: pay?.hourlyRate ?? 0,
     amount: pay?.amount ?? 0,
+    rates: pay?.rates ?? [],
+    days: (pay?.days ?? []).map((day) => ({
+      date: day.date,
+      minutes: day.minutes,
+      hourlyRate: day.hourlyRate,
+      amount: day.amount,
+    })),
   });
 }
 

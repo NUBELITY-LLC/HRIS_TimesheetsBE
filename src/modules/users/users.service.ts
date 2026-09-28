@@ -58,6 +58,7 @@ export type UserProjectView = {
   assignmentId: number;
   payRate: number;
   ratePeriod: RatePeriod;
+  rateChanges: projectsService.RateChangeView[];
   currency: string;
   startDate: string;
   endDate: string | null;
@@ -156,6 +157,9 @@ function toUserProjectView(record: ConsultantAssignmentRecord): UserProjectView 
     assignmentId: record.id,
     payRate: Number(record.pay_rate),
     ratePeriod: ratePeriodOf(record.rate_period),
+    rateChanges: (record.rate_changes ?? [])
+      .map(projectsService.toRateChangeView)
+      .sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom)),
     currency: record.currency,
     startDate: record.start_date,
     endDate: record.end_date,

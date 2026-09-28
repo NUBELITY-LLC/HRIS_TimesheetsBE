@@ -5,6 +5,7 @@ import { MAX_APPROVAL_STEPS, MIN_APPROVAL_STEPS } from '../../utils/approvals.js
 import type { ApproverType } from '../../types/database.types.js';
 import type { ProjectStatus } from '../../utils/projects.js';
 import type { PayTermsColumns } from '../payroll/pay.schema.js';
+import { RATE_CHANGE_COLUMNS, type RateChangeRecord } from '../payroll/pay.repository.js';
 
 export type ClientRef = { id: number; client_name: string; is_active: boolean };
 export type UserRef = {
@@ -47,6 +48,7 @@ export type AssignmentRecord = {
   overtime_multiplier: number;
   holiday_multiplier: number;
   consultant: UserRef | null;
+  rate_changes: RateChangeRecord[] | null;
 };
 
 export type ConsultantAssignmentRecord = {
@@ -66,6 +68,7 @@ export type ConsultantAssignmentRecord = {
   daily_hours: number;
   overtime_multiplier: number;
   holiday_multiplier: number;
+  rate_changes: RateChangeRecord[] | null;
   project: {
     id: number;
     project_name: string;
@@ -145,12 +148,14 @@ const ASSIGNMENT_COLUMNS =
   'id, project_id, consultant_id, pay_rate, currency, rate_period, start_date, end_date, is_active, ' +
   'assignment_code, ' +
   PAY_TERMS_SELECT +
+  `rate_changes:ASSIGNMENT_RATE_CHANGES(${RATE_CHANGE_COLUMNS}), ` +
   `consultant:USERS!inner(${USER_REF_COLUMNS})`;
 
 const CONSULTANT_ASSIGNMENT_COLUMNS =
   'id, project_id, consultant_id, pay_rate, currency, rate_period, start_date, end_date, is_active, ' +
   'assignment_code, ' +
   PAY_TERMS_SELECT +
+  `rate_changes:ASSIGNMENT_RATE_CHANGES(${RATE_CHANGE_COLUMNS}), ` +
   'project:PROJECTS!inner(id, project_name, code, start_date, end_date, status, ' +
   'client:CLIENTS!inner(id, client_name, is_active))';
 

@@ -115,6 +115,21 @@ create index if not exists "idx_PROJECT_ASSIGNMENTS_consultant_id"
 create unique index if not exists "idx_PROJECT_ASSIGNMENTS_project_id_consultant_id_start_date"
   on public."PROJECT_ASSIGNMENTS" (project_id, consultant_id, start_date);
 
+create table if not exists public."ASSIGNMENT_RATE_CHANGES" (
+  id             bigint         generated always as identity primary key,
+  assignment_id  bigint         not null references public."PROJECT_ASSIGNMENTS"(id) on delete cascade,
+  effective_from date           not null,
+  pay_rate       numeric(10, 2) not null,
+  rate_period    varchar(5)     not null,
+  created_by     bigint         references public."USERS"(id) on delete set null,
+  created_at     timestamp      not null default now(),
+  constraint "chk_ASSIGNMENT_RATE_CHANGES_pay_rate" check (pay_rate >= 0),
+  constraint "chk_ASSIGNMENT_RATE_CHANGES_rate_period" check (rate_period in ('HOUR', 'MONTH', 'YEAR'))
+);
+
+create unique index if not exists "idx_ASSIGNMENT_RATE_CHANGES_assignment_id_effective_from"
+  on public."ASSIGNMENT_RATE_CHANGES" (assignment_id, effective_from);
+
 create table if not exists public."PROJECT_APPROVAL_STEPS" (
   id             bigint      generated always as identity primary key,
   project_id     bigint      not null references public."PROJECTS"(id),
@@ -337,6 +352,17 @@ create table if not exists public."TIMESHEET_ATTACHMENTS" (
 
 create index if not exists "idx_TIMESHEET_ATTACHMENTS_timesheet_id"
   on public."TIMESHEET_ATTACHMENTS" (timesheet_id);
+
+create table if not exists public."TIMESHEET_PAY" (
+  timesheet_id bigint         primary key references public."TIMESHEETS"(id) on delete cascade,
+  currency     char(3)        not null,
+  hourly_rate  numeric(12, 4) not null,
+  minutes      integer        not null,
+  amount       numeric(12, 2) not null,
+  breakdown    jsonb          not null,
+  frozen_at    timestamp      not null default now(),
+  constraint "chk_TIMESHEET_PAY_amounts" check (minutes >= 0 and hourly_rate >= 0 and amount >= 0)
+);
 
 create table if not exists public."NOTIFICATIONS" (
   id           bigint       generated always as identity primary key,
@@ -2080,6 +2106,8 @@ alter table public."TIMESHEET_APPROVALS"    enable row level security;
 alter table public."TIMESHEET_EVENTS"       enable row level security;
 alter table public."APPROVAL_REQUESTS"      enable row level security;
 alter table public."TIMESHEET_ATTACHMENTS"  enable row level security;
+alter table public."ASSIGNMENT_RATE_CHANGES" enable row level security;
+alter table public."TIMESHEET_PAY"          enable row level security;
 alter table public."NOTIFICATIONS"          enable row level security;
 alter table public."PAYMENT_BATCHES"        enable row level security;
 alter table public."PAYMENTS"               enable row level security;

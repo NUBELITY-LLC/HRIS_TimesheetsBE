@@ -9,12 +9,14 @@ export type ActivityLogRow = {
   hours: number;
   activity: string;
   note: string | null;
+  hourlyRate?: number;
+  amount?: number;
 };
 
 export type ActivityLogCosts = {
   currency: string;
-  hourlyRate: number;
   amount: number;
+  rates: { from: string; hourlyRate: number }[];
 };
 
 export type ActivityLog = {
@@ -65,10 +67,10 @@ const DETAIL_LAYOUT: Layout = {
 
 const SUMMARY_LAYOUT: Layout = {
   title: 'HOURS SUMMARY',
-  headers: ['Resource', 'Period', 'Date', 'Day', 'Hours'],
-  widths: [24, 36, 16, 16, 18],
-  pdfWidths: [0, 200, 110, 110, 80],
-  lastColumn: 'E',
+  headers: ['Resource', 'Period', 'Date', 'Day', 'Hours', 'Hourly rate', 'Amount'],
+  widths: [24, 25, 13, 16, 16, 16, 16],
+  pdfWidths: [0, 150, 70, 70, 50, 90, 90],
+  lastColumn: 'G',
 };
 
 function layoutOf(log: ActivityLog): Layout {
@@ -77,6 +79,19 @@ function layoutOf(log: ActivityLog): Layout {
 
 function formatAmount(value: number, currency: string): string {
   return `${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
+}
+
+function ratesLabel(costs: ActivityLogCosts): string {
+  if (costs.rates.length <= 1) {
+    return formatAmount(costs.rates[0]?.hourlyRate ?? 0, costs.currency);
+  }
+
+  return costs.rates
+    .map(
+      (rate) =>
+        `${formatAmount(rate.hourlyRate, costs.currency)} from ${displayDate(rate.from)}`,
+    )
+    .join(' · ');
 }
 
 function rowValues(log: ActivityLog, entry: ActivityLogRow): string[] {
@@ -88,7 +103,13 @@ function rowValues(log: ActivityLog, entry: ActivityLogRow): string[] {
     String(entry.hours),
   ];
 
-  return log.costs ? base : [...base, entry.activity, entry.note ?? ''];
+  return log.costs
+    ? [
+        ...base,
+        formatAmount(entry.hourlyRate ?? 0, log.costs.currency),
+        formatAmount(entry.amount ?? 0, log.costs.currency),
+      ]
+    : [...base, entry.activity, entry.note ?? ''];
 }
 
 export function nameInitials(fullName: string): string {
@@ -199,11 +220,16 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
 
   if (log.costs) {
     const amountFormat = `#,##0.00 "${log.costs.currency}"`;
-    workday.getCell(4).value = 'Hourly cost';
+    workday.getCell(4).value = 'Hourly rate';
     workday.getCell(4).font = { bold: true };
-    workday.getCell(5).value = log.costs.hourlyRate;
-    workday.getCell(5).numFmt = amountFormat;
-    costs.getCell(4).value = 'Total cost';
+    if (log.costs.rates.length > 1) {
+      sheet.mergeCells(`E3:${layout.lastColumn}3`);
+      workday.getCell(5).value = ratesLabel(log.costs);
+    } else {
+      workday.getCell(5).value = log.costs.rates[0]?.hourlyRate ?? 0;
+      workday.getCell(5).numFmt = amountFormat;
+    }
+    costs.getCell(4).value = 'Total amount';
     costs.getCell(4).font = { bold: true };
     costs.getCell(5).value = log.costs.amount;
     costs.getCell(5).numFmt = amountFormat;
@@ -237,7 +263,13 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
     row.getCell(3).numFmt = 'mm/dd/yyyy';
     row.getCell(4).value = weekday(entry.date);
     row.getCell(5).value = entry.hours;
-    if (!log.costs) {
+    if (log.costs) {
+      const amountFormat = `#,##0.00 "${log.costs.currency}"`;
+      row.getCell(6).value = entry.hourlyRate ?? 0;
+      row.getCell(6).numFmt = amountFormat;
+      row.getCell(7).value = entry.amount ?? 0;
+      row.getCell(7).numFmt = amountFormat;
+    } else {
       row.getCell(6).value = entry.activity;
       row.getCell(7).value = entry.note ?? null;
     }
@@ -253,6 +285,15 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
     result: totalHours(log),
   };
   totalRow.getCell(5).font = { bold: true };
+
+  if (log.costs) {
+    totalRow.getCell(7).value = {
+      formula: `SUM(G${firstDataRow}:G${lastDataRow})`,
+      result: log.costs.amount,
+    };
+    totalRow.getCell(7).numFmt = `#,##0.00 "${log.costs.currency}"`;
+    totalRow.getCell(7).font = { bold: true };
+  }
 
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
@@ -343,8 +384,8 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
       ['Schedule', workdayLabel(log)],
       ...(log.costs
         ? ([
-            ['Hourly cost', formatAmount(log.costs.hourlyRate, log.costs.currency)],
-            ['Total cost', formatAmount(log.costs.amount, log.costs.currency)],
+            ['Hourly rate', ratesLabel(log.costs)],
+            ['Total amount', formatAmount(log.costs.amount, log.costs.currency)],
           ] as [string, string][])
         : []),
     ];
@@ -375,7 +416,13 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
 
     const total = cells(
       layout.headers.map((_, index) =>
-        index === 3 ? 'TOTAL' : index === 4 ? String(totalHours(log)) : '',
+        index === 3
+          ? 'TOTAL'
+          : index === 4
+            ? String(totalHours(log))
+            : index === 6 && log.costs
+              ? formatAmount(log.costs.amount, log.costs.currency)
+              : '',
       ),
       { bold: true },
     );

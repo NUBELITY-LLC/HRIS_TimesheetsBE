@@ -10,6 +10,7 @@ import {
   DEFAULT_PAY_TERMS,
   DEFAULT_PAYROLL_RULES,
   hourlyRateFor,
+  rateOn,
   type ContractType,
   type PayBreakdown,
   type PayrollRules,
@@ -58,10 +59,21 @@ export function toPayTermsView(
   };
 }
 
-export function toPayTerms(record: repository.PayTermsRecord): PayTerms {
+export function toRateChanges(records: repository.RateChangeRecord[] | null | undefined) {
+  return (records ?? []).map((record) => ({
+    effectiveFrom: record.effective_from,
+    payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
+  }));
+}
+
+export function toPayTerms(
+  record: repository.PayTermsRecord & { rate_changes?: repository.RateChangeRecord[] | null },
+): PayTerms {
   return {
     payRate: Number(record.pay_rate),
     ratePeriod: ratePeriodOf(record.rate_period),
+    rateChanges: toRateChanges(record.rate_changes),
     ...toPayTermsView(record),
   };
 }
@@ -165,9 +177,22 @@ async function payrollRulesByCountry(
   return new Map(rows.map((row) => [row.country_code, toPayrollRules(row)]));
 }
 
+const FROZEN_STATUSES = ['APPROVED', 'CLOSED', 'PAID'];
+
 export async function payForTimesheets(ids: number[]): Promise<Map<number, PayBreakdown>> {
-  const records = await repository.findTimesheetsForPay([...new Set(ids)]);
+  const uniqueIds = [...new Set(ids)];
   const result = new Map<number, PayBreakdown>();
+
+  if (!uniqueIds.length) return result;
+
+  for (const frozen of await repository.findFrozenPay(uniqueIds)) {
+    result.set(frozen.timesheet_id, frozen.breakdown as PayBreakdown);
+  }
+
+  const pending = uniqueIds.filter((id) => !result.has(id));
+  if (!pending.length) return result;
+
+  const records = await repository.findTimesheetsForPay(pending);
 
   if (!records.length) return result;
 
@@ -201,7 +226,31 @@ export async function payForTimesheets(ids: number[]): Promise<Map<number, PayBr
     );
   }
 
+  await repository.insertFrozenPay(
+    records
+      .filter((record) => record.assignment && FROZEN_STATUSES.includes(record.status))
+      .map((record) => {
+        const breakdown = result.get(record.id)!;
+        return {
+          timesheet_id: record.id,
+          currency: record.assignment!.currency,
+          hourly_rate: breakdown.hourlyRate,
+          minutes: breakdown.minutes,
+          amount: breakdown.amount,
+          breakdown,
+        };
+      }),
+  );
+
   return result;
+}
+
+export async function freezeTimesheetPay(timesheetId: number): Promise<void> {
+  try {
+    await payForTimesheets([timesheetId]);
+  } catch (error) {
+    logger.error({ err: error, timesheetId }, 'No fue posible congelar el pago del timesheet');
+  }
 }
 
 export type PaySummaryView = Omit<PayBreakdown, 'days'>;
@@ -219,6 +268,7 @@ export type PayAssignmentView = {
   assignmentCode: string | null;
   payRate: number;
   ratePeriod: RatePeriod;
+  rateChanges: { id: number; effectiveFrom: string; payRate: number; ratePeriod: RatePeriod }[];
   currency: string;
   hourlyRate: number;
   payTerms: PayTermsView;
@@ -238,8 +288,19 @@ function toPayAssignmentView(record: repository.PayAssignmentRecord): PayAssignm
     assignmentCode: record.assignment_code,
     payRate: terms.payRate,
     ratePeriod: terms.ratePeriod,
+    rateChanges: (record.rate_changes ?? [])
+      .map((change) => ({
+        id: change.id,
+        effectiveFrom: change.effective_from,
+        payRate: Number(change.pay_rate),
+        ratePeriod: ratePeriodOf(change.rate_period),
+      }))
+      .sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom)),
     currency: record.currency,
-    hourlyRate: hourlyRateFor(terms),
+    hourlyRate: hourlyRateFor({
+      ...terms,
+      ...rateOn(terms, new Date().toISOString().slice(0, 10)),
+    }),
     payTerms: toPayTermsView(record),
     consultant: record.consultant
       ? {

@@ -93,6 +93,20 @@ export const assignmentParamsSchema = z.object({
   assignmentId: positiveId,
 });
 
+export const rateChangeParamsSchema = z.object({
+  id: positiveId,
+  assignmentId: positiveId,
+  rateId: positiveId,
+});
+
+export const createRateChangeSchema = z.object({
+  effectiveFrom: isoDate,
+  payRate,
+  ratePeriod: ratePeriod.optional(),
+});
+
+export type CreateRateChangeInput = z.infer<typeof createRateChangeSchema>;
+
 export const listProjectsQuerySchema = z.object({
   page: z.coerce.number().int().min(1, 'La pagina debe ser mayor que cero').default(1),
   pageSize: z.coerce

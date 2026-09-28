@@ -227,6 +227,26 @@ type ApprovalAttachmentsRow = {
 
 type TimesheetAttachmentsRow = Omit<ApprovalAttachmentsRow, 'approval_id'>;
 
+type AssignmentRateChangesRow = {
+  id: number;
+  assignment_id: number;
+  effective_from: string;
+  pay_rate: number;
+  rate_period: string;
+  created_by: number | null;
+  created_at: string;
+};
+
+type TimesheetPayRow = {
+  timesheet_id: number;
+  currency: string;
+  hourly_rate: number;
+  minutes: number;
+  amount: number;
+  breakdown: unknown;
+  frozen_at: string;
+};
+
 type NotificationsRow = {
   id: number;
   user_id: number;
@@ -460,6 +480,21 @@ export type Database = {
           ForeignKey<'timesheet_id', 'TIMESHEETS'>,
           ForeignKey<'uploaded_by', 'USERS'>,
         ];
+      };
+      ASSIGNMENT_RATE_CHANGES: {
+        Row: AssignmentRateChangesRow;
+        Insert: InsertOf<AssignmentRateChangesRow, 'created_by' | 'created_at'>;
+        Update: Partial<AssignmentRateChangesRow>;
+        Relationships: [
+          ForeignKey<'assignment_id', 'PROJECT_ASSIGNMENTS'>,
+          ForeignKey<'created_by', 'USERS'>,
+        ];
+      };
+      TIMESHEET_PAY: {
+        Row: TimesheetPayRow;
+        Insert: Omit<TimesheetPayRow, 'frozen_at'> & Partial<Pick<TimesheetPayRow, 'frozen_at'>>;
+        Update: Partial<TimesheetPayRow>;
+        Relationships: [ForeignKey<'timesheet_id', 'TIMESHEETS'>];
       };
       TIMESHEET_ATTACHMENTS: {
         Row: TimesheetAttachmentsRow;
