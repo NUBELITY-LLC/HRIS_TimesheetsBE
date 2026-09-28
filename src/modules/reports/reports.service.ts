@@ -139,7 +139,7 @@ function toEntryView(
       : null,
     assignmentCode: assignment?.assignment_code ?? null,
     payRate,
-    hourlyRate: pay?.hourlyRate ?? 0,
+    hourlyRate: dayPay?.hourlyRate ?? pay?.hourlyRate ?? 0,
     currency: assignment?.currency ?? '',
     amount: dayPay?.amount ?? 0,
     lines: dayPay?.lines ?? [],

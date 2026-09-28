@@ -6,6 +6,7 @@ import type { PayTermsColumns } from './pay.schema.js';
 export type PayTermsRecord = {
   pay_rate: number;
   currency: string;
+  rate_period: string;
   contract_type: string;
   country_code: string;
   hours_divisor: number;
@@ -14,16 +15,29 @@ export type PayTermsRecord = {
   holiday_multiplier: number;
 };
 
+export type RateChangeRecord = {
+  id: number;
+  assignment_id: number;
+  effective_from: string;
+  pay_rate: number;
+  rate_period: string;
+  created_at: string;
+};
+
+export const RATE_CHANGE_COLUMNS =
+  'id, assignment_id, effective_from, pay_rate, rate_period, created_at';
+
 export type TimesheetPayRecord = {
   id: number;
+  status: string;
   week_start_date: string;
   week_end_date: string;
-  assignment: PayTermsRecord | null;
+  assignment: (PayTermsRecord & { rate_changes: RateChangeRecord[] | null }) | null;
   days: { work_date: string; total_hours: number }[] | null;
 };
 
 export const PAY_TERMS_COLUMNS =
-  'pay_rate, currency, contract_type, country_code, hours_divisor, daily_hours, ' +
+  'pay_rate, currency, rate_period, contract_type, country_code, hours_divisor, daily_hours, ' +
   'overtime_multiplier, holiday_multiplier';
 
 function fail(operation: string, error: unknown): never {
@@ -37,8 +51,9 @@ export async function findTimesheetsForPay(ids: number[]): Promise<TimesheetPayR
   const { data, error } = await supabase
     .from('TIMESHEETS')
     .select(
-      `id, week_start_date, week_end_date, ` +
-        `assignment:PROJECT_ASSIGNMENTS!inner(${PAY_TERMS_COLUMNS}), ` +
+      `id, status, week_start_date, week_end_date, ` +
+        `assignment:PROJECT_ASSIGNMENTS!inner(${PAY_TERMS_COLUMNS}, ` +
+        `rate_changes:ASSIGNMENT_RATE_CHANGES(${RATE_CHANGE_COLUMNS})), ` +
         'days:TIMESHEET_DAYS(work_date, total_hours)',
     )
     .in('id', ids);
@@ -112,6 +127,7 @@ export async function upsertPayrollRules(
 
 export type PayAssignmentRecord = PayTermsRecord & {
   id: number;
+  rate_changes: RateChangeRecord[] | null;
   start_date: string;
   end_date: string | null;
   is_active: boolean;
@@ -121,14 +137,20 @@ export type PayAssignmentRecord = PayTermsRecord & {
     id: number;
     project_name: string;
     code: string | null;
-    client: { id: number; client_name: string } | null;
+    client: {
+      id: number;
+      client_name: string;
+      company: { id: number; trade_name: string } | null;
+    } | null;
   } | null;
 };
 
 const PAY_ASSIGNMENT_COLUMNS =
   `id, start_date, end_date, is_active, assignment_code, ${PAY_TERMS_COLUMNS}, ` +
+  `rate_changes:ASSIGNMENT_RATE_CHANGES(${RATE_CHANGE_COLUMNS}), ` +
   'consultant:USERS!inner(id, full_name, email), ' +
-  'project:PROJECTS!inner(id, project_name, code, client:CLIENTS!inner(id, client_name))';
+  'project:PROJECTS!inner(id, project_name, code, ' +
+  'client:CLIENTS!inner(id, client_name, company:COMPANIES(id, trade_name)))';
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`);
@@ -165,7 +187,7 @@ export async function findPayAssignments(filters: {
 
 export async function updateAssignmentPayTerms(
   id: number,
-  patch: PayTermsColumns & { pay_rate?: number },
+  patch: PayTermsColumns & { pay_rate?: number; rate_period?: string },
 ): Promise<PayAssignmentRecord | null> {
   const { data, error } = await supabase
     .from('PROJECT_ASSIGNMENTS')
@@ -177,4 +199,91 @@ export async function updateAssignmentPayTerms(
   if (error) fail('updateAssignmentPayTerms', error);
 
   return (data as unknown as PayAssignmentRecord | null) ?? null;
+}
+
+export type FrozenPayRecord = {
+  timesheet_id: number;
+  breakdown: unknown;
+};
+
+export async function findFrozenPay(timesheetIds: number[]): Promise<FrozenPayRecord[]> {
+  if (!timesheetIds.length) return [];
+
+  const { data, error } = await supabase
+    .from('TIMESHEET_PAY')
+    .select('timesheet_id, breakdown')
+    .in('timesheet_id', timesheetIds);
+
+  if (error) fail('findFrozenPay', error);
+
+  return (data ?? []) as FrozenPayRecord[];
+}
+
+export async function insertFrozenPay(
+  rows: {
+    timesheet_id: number;
+    currency: string;
+    hourly_rate: number;
+    minutes: number;
+    amount: number;
+    breakdown: unknown;
+  }[],
+): Promise<void> {
+  if (!rows.length) return;
+
+  const { error } = await supabase
+    .from('TIMESHEET_PAY')
+    .upsert(rows, { onConflict: 'timesheet_id', ignoreDuplicates: true });
+
+  if (error) fail('insertFrozenPay', error);
+}
+
+export async function findRateChanges(assignmentId: number): Promise<RateChangeRecord[]> {
+  const { data, error } = await supabase
+    .from('ASSIGNMENT_RATE_CHANGES')
+    .select(RATE_CHANGE_COLUMNS)
+    .eq('assignment_id', assignmentId)
+    .order('effective_from', { ascending: true });
+
+  if (error) fail('findRateChanges', error);
+
+  return (data ?? []) as RateChangeRecord[];
+}
+
+export async function insertRateChange(row: {
+  assignment_id: number;
+  effective_from: string;
+  pay_rate: number;
+  rate_period: string;
+  created_by: number;
+}): Promise<RateChangeRecord> {
+  const { data, error } = await supabase
+    .from('ASSIGNMENT_RATE_CHANGES')
+    .insert(row)
+    .select(RATE_CHANGE_COLUMNS)
+    .single();
+
+  if (error) {
+    if ((error as { code?: string }).code === '23505') {
+      throw new ApiError(409, 'Ya existe un cambio de tarifa con esa fecha', 'RATE_CHANGE_DUPLICATED', {
+        field: 'effectiveFrom',
+      });
+    }
+    fail('insertRateChange', error);
+  }
+
+  return data as RateChangeRecord;
+}
+
+export async function deleteRateChange(id: number, assignmentId: number): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('ASSIGNMENT_RATE_CHANGES')
+    .delete()
+    .eq('id', id)
+    .eq('assignment_id', assignmentId)
+    .select('id');
+
+  if (error) fail('deleteRateChange', error);
+
+  return (data ?? []).length > 0;
 }

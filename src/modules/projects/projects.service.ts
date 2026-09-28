@@ -5,7 +5,13 @@ import { PERMISSION_TIMESHEETS_APPROVE } from '../../utils/permissions.js';
 import { ASSIGNABLE_ROLES, PROJECT_MANAGER_ROLES } from '../../utils/roles.js';
 import { PROJECT_STATUS_CLOSED, type ProjectStatus } from '../../utils/projects.js';
 import * as clientsRepository from '../clients/clients.repository.js';
-import { toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import { ratePeriodOf, toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import * as payRepository from '../payroll/pay.repository.js';
+import {
+  DEFAULT_CURRENCY,
+  DEFAULT_RATE_PERIOD,
+  type RatePeriod,
+} from '../../utils/assignments.js';
 import { queueNotificationEmails } from '../notifications/notifications.emails.js';
 import * as repository from './projects.repository.js';
 import type {
@@ -21,6 +27,7 @@ import type {
   CloseProjectInput,
   CreateAssignmentInput,
   CreateProjectInput,
+  CreateRateChangeInput,
   ListProjectsQuery,
   ReplaceApprovalStepsInput,
   UpdateAssignmentInput,
@@ -53,13 +60,22 @@ export type AssignmentView = {
   id: number;
   projectId: number;
   payRate: number;
+  ratePeriod: RatePeriod;
   currency: string;
   startDate: string;
   endDate: string | null;
   isActive: boolean;
   assignmentCode: string | null;
   payTerms: PayTermsView;
+  rateChanges: RateChangeView[];
   consultant: PersonView | null;
+};
+
+export type RateChangeView = {
+  id: number;
+  effectiveFrom: string;
+  payRate: number;
+  ratePeriod: RatePeriod;
 };
 
 export type ApprovalClientView = {
@@ -126,13 +142,26 @@ function toAssignmentView(record: AssignmentRecord): AssignmentView {
     id: record.id,
     projectId: record.project_id,
     payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
     currency: record.currency,
     startDate: record.start_date,
     endDate: record.end_date,
     isActive: record.is_active,
     assignmentCode: record.assignment_code,
     payTerms: toPayTermsView(record),
+    rateChanges: (record.rate_changes ?? [])
+      .map(toRateChangeView)
+      .sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom)),
     consultant: toPersonView(record.consultant),
+  };
+}
+
+export function toRateChangeView(record: payRepository.RateChangeRecord): RateChangeView {
+  return {
+    id: record.id,
+    effectiveFrom: record.effective_from,
+    payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
   };
 }
 
@@ -379,13 +408,15 @@ export function assertWithinProject(
   endDate: string | null,
 ): void {
   if (project.start_date && startDate < project.start_date) {
-    throw ApiError.unprocessable('La asignacion inicia antes que el proyecto', {
+    throw new ApiError(422, 'La asignacion inicia antes que el proyecto', 'ASSIGNMENT_BEFORE_PROJECT', {
+      field: 'startDate',
       projectStartDate: project.start_date,
     });
   }
 
   if (project.end_date && endDate && endDate > project.end_date) {
-    throw ApiError.unprocessable('La asignacion termina despues que el proyecto', {
+    throw new ApiError(422, 'La asignacion termina despues que el proyecto', 'ASSIGNMENT_AFTER_PROJECT', {
+      field: 'endDate',
       projectEndDate: project.end_date,
     });
   }
@@ -413,7 +444,8 @@ export async function assignConsultant(
 
   await resolveConsultant(input.consultantId);
 
-  assertWithinProject(project, input.startDate, input.endDate ?? null);
+  const endDate = input.endDate ?? project.end_date ?? null;
+  assertWithinProject(project, input.startDate, endDate);
 
   const existing = await repository.findAssignmentsByProject(projectId);
   const overlapping = existing.find(
@@ -421,7 +453,7 @@ export async function assignConsultant(
       assignment.consultant_id === input.consultantId &&
       assignment.is_active &&
       (assignment.end_date === null || assignment.end_date >= input.startDate) &&
-      (input.endDate == null || input.endDate >= assignment.start_date),
+      (endDate === null || endDate >= assignment.start_date),
   );
 
   if (overlapping) {
@@ -432,9 +464,11 @@ export async function assignConsultant(
     project_id: projectId,
     consultant_id: input.consultantId,
     pay_rate: input.payRate,
-    currency: input.currency ?? 'USD',
+    currency: input.currency ?? DEFAULT_CURRENCY,
+    rate_period: input.ratePeriod ?? DEFAULT_RATE_PERIOD,
+    ...(input.contractType ? { contract_type: input.contractType } : {}),
     start_date: input.startDate,
-    end_date: input.endDate ?? null,
+    end_date: endDate,
     is_active: true,
     assignment_code: input.assignmentCode ?? null,
   });
@@ -476,6 +510,8 @@ export async function updateAssignment(
 
   if (input.payRate !== undefined) patch.pay_rate = input.payRate;
   if (input.currency !== undefined) patch.currency = input.currency;
+  if (input.ratePeriod !== undefined) patch.rate_period = input.ratePeriod;
+  if (input.contractType !== undefined) patch.contract_type = input.contractType;
   if (input.startDate !== undefined) patch.start_date = input.startDate;
   if (input.endDate !== undefined) patch.end_date = input.endDate;
   if (input.isActive !== undefined) patch.is_active = input.isActive;
@@ -608,32 +644,38 @@ async function buildApprovalStepPayload(
   step: ApprovalStepInput,
   index: number,
   companyId: number,
-): Promise<repository.ApprovalStepPayload> {
+): Promise<{ row: repository.ApprovalStepPayload; approverUserId: number | null }> {
   const seq = index + 1;
 
   if (step.approverType === 'USER') {
     const approver = await resolveNominatedApprover(step.userId, `steps.${index}.userId`);
 
     return {
-      seq,
-      approverType: 'USER',
-      userId: approver.id,
-      roleCode: null,
-      clientId: null,
-      approverEmail: null,
-      approverName: step.approverName ?? approver.full_name,
+      row: {
+        seq,
+        approverType: 'USER',
+        userId: approver.id,
+        roleCode: null,
+        clientId: null,
+        approverEmail: null,
+        approverName: step.approverName ?? approver.full_name,
+      },
+      approverUserId: approver.id,
     };
   }
 
   if (step.approverType === 'ROLE') {
     return {
-      seq,
-      approverType: 'ROLE',
-      userId: null,
-      roleCode: step.roleCode,
-      clientId: null,
-      approverEmail: null,
-      approverName: step.approverName ?? null,
+      row: {
+        seq,
+        approverType: 'ROLE',
+        userId: null,
+        roleCode: step.roleCode,
+        clientId: null,
+        approverEmail: null,
+        approverName: step.approverName ?? null,
+      },
+      approverUserId: null,
     };
   }
 
@@ -644,13 +686,16 @@ async function buildApprovalStepPayload(
   );
 
   return {
-    seq,
-    approverType: 'CLIENT_EMAIL',
-    userId: null,
-    roleCode: null,
-    clientId: client.id,
-    approverEmail: (client.contact_email as string).toLowerCase(),
-    approverName: client.client_name,
+    row: {
+      seq,
+      approverType: 'CLIENT_EMAIL',
+      userId: null,
+      roleCode: null,
+      clientId: client.id,
+      approverEmail: (client.contact_email as string).toLowerCase(),
+      approverName: client.client_name,
+    },
+    approverUserId: client.user_id,
   };
 }
 
@@ -672,9 +717,14 @@ export async function replaceApprovalSteps(
 
   const payload: repository.ApprovalStepPayload[] = [];
   const seen = new Map<string, number>();
+  const approverUserIds = new Set<number>();
 
   for (const [index, step] of input.steps.entries()) {
-    const row = await buildApprovalStepPayload(step, index, projectClient.company_id);
+    const { row, approverUserId } = await buildApprovalStepPayload(
+      step,
+      index,
+      projectClient.company_id,
+    );
     const key = approverKey(row);
     const duplicateOf = seen.get(key);
 
@@ -687,12 +737,20 @@ export async function replaceApprovalSteps(
 
     seen.set(key, index);
     payload.push(row);
+    if (approverUserId !== null) approverUserIds.add(approverUserId);
   }
 
   if (!seen.has(`CLIENT:${projectClient.id}`)) {
     throw ApiError.unprocessable(
       `El cliente del proyecto (${projectClient.client_name}) debe ser uno de los aprobadores`,
       { code: 'PROJECT_CLIENT_LANE_REQUIRED', clientId: projectClient.id },
+    );
+  }
+
+  if (project.manager_id !== null && !approverUserIds.has(project.manager_id)) {
+    throw ApiError.unprocessable(
+      `El manager del proyecto (${project.manager?.full_name ?? project.manager_id}) debe ser uno de los aprobadores`,
+      { code: 'PROJECT_MANAGER_LANE_REQUIRED', managerId: project.manager_id },
     );
   }
 
@@ -748,4 +806,69 @@ export async function reopenProject(projectId: number, actor: Actor): Promise<Pr
   logger.info({ projectId, reopenedBy: actor.id }, 'Proyecto reabierto');
 
   return toProjectView(await loadProject(projectId));
+}
+
+export async function addRateChange(
+  projectId: number,
+  assignmentId: number,
+  input: CreateRateChangeInput,
+  actor: Actor,
+): Promise<AssignmentView> {
+  const project = await loadProject(projectId);
+  assertProjectOpen(project, 'sus asignaciones ya no se editan');
+  const assignment = await loadProjectAssignment(projectId, assignmentId);
+
+  if (input.effectiveFrom <= assignment.start_date) {
+    throw new ApiError(
+      422,
+      'El cambio de tarifa debe iniciar despues del inicio de la asignacion',
+      'RATE_CHANGE_BEFORE_ASSIGNMENT',
+      { field: 'effectiveFrom', assignmentStartDate: assignment.start_date },
+    );
+  }
+
+  if (assignment.end_date && input.effectiveFrom > assignment.end_date) {
+    throw new ApiError(
+      422,
+      'El cambio de tarifa no puede iniciar despues del fin de la asignacion',
+      'RATE_CHANGE_AFTER_ASSIGNMENT',
+      { field: 'effectiveFrom', assignmentEndDate: assignment.end_date },
+    );
+  }
+
+  await payRepository.insertRateChange({
+    assignment_id: assignmentId,
+    effective_from: input.effectiveFrom,
+    pay_rate: input.payRate,
+    rate_period: input.ratePeriod ?? assignment.rate_period,
+    created_by: actor.id,
+  });
+
+  logger.info(
+    { projectId, assignmentId, effectiveFrom: input.effectiveFrom, createdBy: actor.id },
+    'Cambio de tarifa registrado en la asignacion',
+  );
+
+  return toAssignmentView(await loadProjectAssignment(projectId, assignmentId));
+}
+
+export async function removeRateChange(
+  projectId: number,
+  assignmentId: number,
+  rateId: number,
+  actor: Actor,
+): Promise<AssignmentView> {
+  const project = await loadProject(projectId);
+  assertProjectOpen(project, 'sus asignaciones ya no se editan');
+  await loadProjectAssignment(projectId, assignmentId);
+
+  const removed = await payRepository.deleteRateChange(rateId, assignmentId);
+
+  if (!removed) {
+    throw ApiError.notFound('El cambio de tarifa no existe en esta asignacion');
+  }
+
+  logger.info({ projectId, assignmentId, rateId, removedBy: actor.id }, 'Cambio de tarifa eliminado');
+
+  return toAssignmentView(await loadProjectAssignment(projectId, assignmentId));
 }

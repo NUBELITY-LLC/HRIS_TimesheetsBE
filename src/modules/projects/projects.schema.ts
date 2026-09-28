@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { APPROVER_TYPES, MAX_APPROVAL_STEPS, MIN_APPROVAL_STEPS } from '../../utils/approvals.js';
 import { APPROVER_ROLES } from '../../utils/roles.js';
 import { PROJECT_STATUSES } from '../../utils/projects.js';
+import { CURRENCY_CODES, RATE_PERIODS } from '../../utils/assignments.js';
+import { CONTRACT_TYPES } from '../payroll/pay.rules.js';
 
 const positiveId = z.coerce
   .number({ message: 'El id debe ser numerico' })
@@ -21,11 +23,18 @@ const projectName = z
 
 const projectCode = z.string().trim().max(40, 'El codigo excede los 40 caracteres');
 
-const currency = z
-  .string()
-  .trim()
-  .length(3, 'La moneda debe tener 3 letras (ISO 4217)')
-  .transform((value) => value.toUpperCase());
+export const currency = z.preprocess(
+  (value) => (typeof value === 'string' ? value.trim().toUpperCase() : value),
+  z.enum(CURRENCY_CODES, { message: 'La moneda no esta soportada' }),
+);
+
+export const contractType = z.enum(CONTRACT_TYPES, {
+  message: 'El tipo de contrato debe ser CONTRACTOR o PAYROLL',
+});
+
+export const ratePeriod = z.enum(RATE_PERIODS, {
+  message: 'El periodo debe ser por hora, mensual o anual',
+});
 
 const assignmentCode = z
   .string()
@@ -84,6 +93,20 @@ export const assignmentParamsSchema = z.object({
   assignmentId: positiveId,
 });
 
+export const rateChangeParamsSchema = z.object({
+  id: positiveId,
+  assignmentId: positiveId,
+  rateId: positiveId,
+});
+
+export const createRateChangeSchema = z.object({
+  effectiveFrom: isoDate,
+  payRate,
+  ratePeriod: ratePeriod.optional(),
+});
+
+export type CreateRateChangeInput = z.infer<typeof createRateChangeSchema>;
+
 export const listProjectsQuerySchema = z.object({
   page: z.coerce.number().int().min(1, 'La pagina debe ser mayor que cero').default(1),
   pageSize: z.coerce
@@ -114,6 +137,8 @@ export const createAssignmentSchema = z
     consultantId: positiveId,
     payRate,
     currency: currency.optional(),
+    ratePeriod: ratePeriod.optional(),
+    contractType: contractType.optional(),
     startDate: isoDate,
     endDate: isoDate.nullish(),
     assignmentCode: assignmentCode.nullish(),
@@ -124,6 +149,8 @@ export const updateAssignmentSchema = z
   .object({
     payRate: payRate.optional(),
     currency: currency.optional(),
+    ratePeriod: ratePeriod.optional(),
+    contractType: contractType.optional(),
     startDate: isoDate.optional(),
     endDate: isoDate.nullish(),
     isActive: z.boolean().optional(),

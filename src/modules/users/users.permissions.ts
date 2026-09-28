@@ -25,12 +25,17 @@ const DELEGATED_MANAGEABLE_ROLES = [
 const DELEGATED_GRANTABLE_ROLES = [
   ROLE_CONSULTANT,
   ROLE_EMPLOYEE,
+  ROLE_MANAGER,
   ROLE_FINANCE,
   ROLE_EXTERNAL_MANAGER,
 ] as const;
 
 function includes(roles: readonly string[], roleCode: string): boolean {
   return roles.includes(roleCode);
+}
+
+export function canSeeRole(actorRoleCode: string, targetRoleCode: string): boolean {
+  return actorRoleCode === ROLE_ADMIN || targetRoleCode !== ROLE_ADMIN;
 }
 
 export function canManageRole(actorRoleCode: string, targetRoleCode: string): boolean {

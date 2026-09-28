@@ -67,6 +67,7 @@ type ProjectAssignmentsRow = {
   consultant_id: number;
   pay_rate: number;
   currency: string;
+  rate_period: string;
   start_date: string;
   end_date: string | null;
   is_active: boolean;
@@ -176,6 +177,7 @@ type TimesheetApprovalsRow = {
   review_no: number;
   comments: string | null;
   decided_at: string | null;
+  decided_by: number | null;
 };
 
 type TimesheetEventsRow = {
@@ -221,6 +223,28 @@ type ApprovalAttachmentsRow = {
   mime_type: string;
   size_bytes: number;
   created_at: string;
+};
+
+type TimesheetAttachmentsRow = Omit<ApprovalAttachmentsRow, 'approval_id'>;
+
+type AssignmentRateChangesRow = {
+  id: number;
+  assignment_id: number;
+  effective_from: string;
+  pay_rate: number;
+  rate_period: string;
+  created_by: number | null;
+  created_at: string;
+};
+
+type TimesheetPayRow = {
+  timesheet_id: number;
+  currency: string;
+  hourly_rate: number;
+  minutes: number;
+  amount: number;
+  breakdown: unknown;
+  frozen_at: string;
 };
 
 type NotificationsRow = {
@@ -310,6 +334,7 @@ export type Database = {
         Insert: InsertOf<
           ProjectAssignmentsRow,
           | 'currency'
+          | 'rate_period'
           | 'end_date'
           | 'is_active'
           | 'assignment_code'
@@ -397,12 +422,14 @@ export type Database = {
           | 'review_no'
           | 'comments'
           | 'decided_at'
+          | 'decided_by'
         >;
         Update: Partial<TimesheetApprovalsRow>;
         Relationships: [
           ForeignKey<'timesheet_id', 'TIMESHEETS'>,
           ForeignKey<'step_id', 'PROJECT_APPROVAL_STEPS'>,
           ForeignKey<'approver_id', 'USERS'>,
+          ForeignKey<'decided_by', 'USERS'>,
         ];
       };
       TIMESHEET_EVENTS: {
@@ -450,6 +477,30 @@ export type Database = {
         Update: Partial<ApprovalAttachmentsRow>;
         Relationships: [
           ForeignKey<'approval_id', 'TIMESHEET_APPROVALS'>,
+          ForeignKey<'timesheet_id', 'TIMESHEETS'>,
+          ForeignKey<'uploaded_by', 'USERS'>,
+        ];
+      };
+      ASSIGNMENT_RATE_CHANGES: {
+        Row: AssignmentRateChangesRow;
+        Insert: InsertOf<AssignmentRateChangesRow, 'created_by' | 'created_at'>;
+        Update: Partial<AssignmentRateChangesRow>;
+        Relationships: [
+          ForeignKey<'assignment_id', 'PROJECT_ASSIGNMENTS'>,
+          ForeignKey<'created_by', 'USERS'>,
+        ];
+      };
+      TIMESHEET_PAY: {
+        Row: TimesheetPayRow;
+        Insert: Omit<TimesheetPayRow, 'frozen_at'> & Partial<Pick<TimesheetPayRow, 'frozen_at'>>;
+        Update: Partial<TimesheetPayRow>;
+        Relationships: [ForeignKey<'timesheet_id', 'TIMESHEETS'>];
+      };
+      TIMESHEET_ATTACHMENTS: {
+        Row: TimesheetAttachmentsRow;
+        Insert: InsertOf<TimesheetAttachmentsRow, 'created_at'>;
+        Update: Partial<TimesheetAttachmentsRow>;
+        Relationships: [
           ForeignKey<'timesheet_id', 'TIMESHEETS'>,
           ForeignKey<'uploaded_by', 'USERS'>,
         ];

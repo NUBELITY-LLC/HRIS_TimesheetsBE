@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { passwordSchema } from '../../utils/password.js';
 import { PERMISSION_CODES } from '../../utils/permissions.js';
 import { ASSIGNABLE_ROLES, ROLE_CONSULTANT } from '../../utils/roles.js';
+import { contractType, currency, ratePeriod } from '../projects/projects.schema.js';
 
 const fullName = z
   .string({ message: 'El nombre completo es obligatorio' })
@@ -66,6 +67,9 @@ export const userProjectSchema = z
   .object({
     projectId: positiveId,
     payRate,
+    currency: currency.optional(),
+    ratePeriod: ratePeriod.optional(),
+    contractType: contractType.optional(),
     startDate: isoDate,
     endDate: isoDate.nullish(),
     assignmentCode: assignmentCode.nullish(),
@@ -78,6 +82,9 @@ export const userProjectSchema = z
 export const updateUserProjectSchema = z
   .object({
     payRate: payRate.optional(),
+    currency: currency.optional(),
+    ratePeriod: ratePeriod.optional(),
+    contractType: contractType.optional(),
     startDate: isoDate.optional(),
     endDate: isoDate.nullish(),
     isActive: z.boolean().optional(),

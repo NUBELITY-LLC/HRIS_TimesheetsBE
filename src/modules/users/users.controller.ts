@@ -29,15 +29,15 @@ export async function create(req: Request, res: Response): Promise<void> {
   created(res, { user });
 }
 
-export async function list(_req: Request, res: Response): Promise<void> {
+export async function list(req: Request, res: Response): Promise<void> {
   const query = validatedQuery<ListUsersQuery>(res);
-  const { users, total } = await usersService.listUsers(query);
+  const { users, total } = await usersService.listUsers(query, requireActor(req));
 
   paginated(res, users, buildPagination(query.page, query.pageSize, total));
 }
 
 export async function getOne(req: Request, res: Response): Promise<void> {
-  const user = await usersService.getUserById(Number(req.params.id));
+  const user = await usersService.getUserById(Number(req.params.id), requireActor(req));
   ok(res, { user });
 }
 

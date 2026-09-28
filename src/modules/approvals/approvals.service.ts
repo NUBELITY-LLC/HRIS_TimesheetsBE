@@ -4,10 +4,26 @@ import { logger } from '../../config/logger.js';
 import { ROLE_EXTERNAL_MANAGER, ROLE_FINANCE } from '../../utils/roles.js';
 import { queueNotificationEmails } from '../notifications/notifications.emails.js';
 import { deliverApprovalRequests } from '../notifications/notifications.mailer.js';
-import { payForTimesheets, toPaySummary, type PaySummaryView } from '../payroll/pay.service.js';
+import {
+  freezeTimesheetPay,
+  payForTimesheets,
+  toPaySummary,
+  type PaySummaryView,
+} from '../payroll/pay.service.js';
 import type { PayBreakdown } from '../payroll/pay.rules.js';
 import { hoursToMinutes } from '../timesheets/timesheets.rules.js';
-import { findDays, findApprovals } from '../timesheets/timesheets.repository.js';
+import {
+  findDays,
+  findApprovals,
+  findTimesheetAttachments,
+} from '../timesheets/timesheets.repository.js';
+import {
+  exportTimesheetById,
+  signTimesheetAttachment,
+  toTimesheetAttachmentView,
+  type TimesheetAttachmentView,
+} from '../timesheets/timesheets.service.js';
+import type { ExportFormat, ExportedFile } from '../timesheets/timesheets.export.js';
 import * as repository from './approvals.repository.js';
 import {
   assertEvidenceAllowed,
@@ -286,6 +302,8 @@ export async function decideStep(
       })
     : null;
 
+  if (result.outcome === 'COMPLETED') await freezeTimesheetPay(result.timesheetId);
+
   const delivery = await deliverApprovalRequests(result.emailRequests);
   queueNotificationEmails({ timesheetId: result.timesheetId });
 
@@ -365,6 +383,8 @@ export async function approveOnBehalf(
       })
     : null;
 
+  if (result.completed) await freezeTimesheetPay(result.timesheetId);
+
   const delivery = await deliverApprovalRequests(result.emailRequests);
   queueNotificationEmails({ timesheetId: result.timesheetId });
 
@@ -413,6 +433,7 @@ export async function approveOnBehalf(
 export type ApprovalTimelineStep = ApprovalStepSummary & {
   status: string;
   decidedAt: string | null;
+  decidedBy: { id: number; name: string } | null;
   comments: string | null;
 };
 
@@ -476,6 +497,7 @@ export type ApprovalDetailView = {
   days: ApprovalDayView[];
   steps: ApprovalTimelineStep[];
   attachments: ApprovalAttachmentView[];
+  timesheetAttachments: TimesheetAttachmentView[];
 };
 
 type ApprovalAccess = {
@@ -549,10 +571,11 @@ export async function getApprovalDetail(
 
   const canSeeActivities = actor.roleCode !== ROLE_FINANCE;
 
-  const [days, steps, attachments, payByTimesheet] = await Promise.all([
+  const [days, steps, attachments, timesheetAttachments, payByTimesheet] = await Promise.all([
     canSeeActivities ? findDays(timesheet.id) : Promise.resolve([]),
     findApprovals(timesheet.id, timesheet.cycle_no),
     repository.findAttachmentsByTimesheet(timesheet.id),
+    canSeeActivities ? findTimesheetAttachments(timesheet.id) : Promise.resolve([]),
     payFor([timesheet.id], actor),
   ]);
   const pay = payByTimesheet.get(timesheet.id);
@@ -613,10 +636,53 @@ export async function getApprovalDetail(
       approverRoleCode: step.approver_role_code,
       status: step.status,
       decidedAt: step.decided_at,
+      decidedBy: step.decider ? { id: step.decider.id, name: step.decider.full_name } : null,
       comments: step.comments,
     })),
     attachments: attachments.map(toAttachmentView),
+    timesheetAttachments: timesheetAttachments.map(toTimesheetAttachmentView),
   };
+}
+
+export async function exportApprovalTimesheet(
+  approvalId: number,
+  format: ExportFormat,
+  actor: Actor,
+): Promise<ExportedFile> {
+  const { context } = await loadApprovalContext(approvalId, actor);
+  const timesheet = context.timesheet!;
+
+  if (actor.roleCode !== ROLE_FINANCE) {
+    return exportTimesheetById(timesheet.id, format);
+  }
+
+  const pay = (await payFor([timesheet.id], actor)).get(timesheet.id);
+
+  return exportTimesheetById(timesheet.id, format, {
+    currency: timesheet.assignment?.currency ?? '',
+    amount: pay?.amount ?? 0,
+    rates: pay?.rates ?? [],
+    days: (pay?.days ?? []).map((day) => ({
+      date: day.date,
+      minutes: day.minutes,
+      hourlyRate: day.hourlyRate,
+      amount: day.amount,
+    })),
+  });
+}
+
+export async function getTimesheetAttachmentLink(
+  approvalId: number,
+  attachmentId: number,
+  actor: Actor,
+): Promise<{ url: string; fileName: string; mimeType: string }> {
+  const { context } = await loadApprovalContext(approvalId, actor);
+
+  if (actor.roleCode === ROLE_FINANCE) {
+    throw ApiError.notFound('La evidencia no existe');
+  }
+
+  return signTimesheetAttachment(context.timesheet!.id, attachmentId);
 }
 
 function toAttachmentView(record: repository.AttachmentRecord): ApprovalAttachmentView {

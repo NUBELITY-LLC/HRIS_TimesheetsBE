@@ -3,9 +3,14 @@ import { RpcError } from '../../utils/rpc.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { hashPassword } from '../../utils/password.js';
 import { PERMISSION_CODES } from '../../utils/permissions.js';
-import { ASSIGNABLE_ROLES } from '../../utils/roles.js';
+import { ASSIGNABLE_ROLES, ROLE_ADMIN } from '../../utils/roles.js';
 import { queueNotificationEmails } from '../notifications/notifications.emails.js';
-import { toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import { ratePeriodOf, toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
+import {
+  DEFAULT_CURRENCY,
+  DEFAULT_RATE_PERIOD,
+  type RatePeriod,
+} from '../../utils/assignments.js';
 import * as projectsRepository from '../projects/projects.repository.js';
 import type { ConsultantAssignmentRecord } from '../projects/projects.repository.js';
 import * as projectsService from '../projects/projects.service.js';
@@ -20,6 +25,7 @@ import type {
 import {
   canGrantRole,
   canManageRole,
+  canSeeRole,
   grantableRolesFor,
   manageableRolesFor,
   resolvePermissions,
@@ -32,8 +38,6 @@ import type {
   UpdateUserProjectInput,
   UserProjectInput,
 } from './users.schema.js';
-
-const DEFAULT_CURRENCY = 'USD';
 
 export type UserView = {
   id: number;
@@ -53,6 +57,8 @@ export type Actor = { id: number; roleCode: string; permissions: string[] };
 export type UserProjectView = {
   assignmentId: number;
   payRate: number;
+  ratePeriod: RatePeriod;
+  rateChanges: projectsService.RateChangeView[];
   currency: string;
   startDate: string;
   endDate: string | null;
@@ -150,6 +156,10 @@ function toUserProjectView(record: ConsultantAssignmentRecord): UserProjectView 
   return {
     assignmentId: record.id,
     payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
+    rateChanges: (record.rate_changes ?? [])
+      .map(projectsService.toRateChangeView)
+      .sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom)),
     currency: record.currency,
     startDate: record.start_date,
     endDate: record.end_date,
@@ -244,14 +254,17 @@ async function resolveAssignments(projects: UserProjectInput[]): Promise<NewUser
       });
     }
 
-    assertWithinProject(project, item.startDate, item.endDate ?? null);
+    const endDate = item.endDate ?? project.end_date ?? null;
+    assertWithinProject(project, item.startDate, endDate);
 
     assignments.push({
       projectId: item.projectId,
       payRate: item.payRate,
-      currency: DEFAULT_CURRENCY,
+      currency: item.currency ?? DEFAULT_CURRENCY,
+      ratePeriod: item.ratePeriod ?? DEFAULT_RATE_PERIOD,
+      ...(item.contractType ? { contractType: item.contractType } : {}),
       startDate: item.startDate,
-      endDate: item.endDate ?? null,
+      endDate,
       assignmentCode: item.assignmentCode ?? null,
     });
   }
@@ -299,8 +312,18 @@ export async function createUser(input: CreateUserInput, actor: Actor): Promise<
 
 export async function listUsers(
   query: ListUsersQuery,
+  actor: Actor,
 ): Promise<{ users: UserView[]; total: number }> {
   let roleId: number | undefined;
+  let excludeRoleId: number | undefined;
+
+  if (query.roleCode && !canSeeRole(actor.roleCode, query.roleCode)) {
+    return { users: [], total: 0 };
+  }
+
+  if (!canSeeRole(actor.roleCode, ROLE_ADMIN)) {
+    excludeRoleId = (await usersRepository.findRoleByCode(ROLE_ADMIN))?.id;
+  }
 
   if (query.roleCode) {
     const role = await usersRepository.findRoleByCode(query.roleCode);
@@ -315,6 +338,7 @@ export async function listUsers(
     pageSize: query.pageSize,
     search: query.search,
     roleId,
+    excludeRoleId,
     permission: query.permission,
     isActive: query.status === 'all' ? undefined : query.status === 'active',
     sortColumn: SORT_COLUMNS[query.sortBy],
@@ -324,14 +348,20 @@ export async function listUsers(
   return { users: rows.map(toUserView), total };
 }
 
-export async function getUserById(id: number): Promise<UserView> {
+export async function getUserById(id: number, actor: Actor): Promise<UserView> {
   const record = await usersRepository.findUserById(id);
 
   if (!record) {
     throw ApiError.notFound('El usuario no existe');
   }
 
-  return toUserView(record);
+  const view = toUserView(record);
+
+  if (!canSeeRole(actor.roleCode, view.role.code)) {
+    throw ApiError.notFound('El usuario no existe');
+  }
+
+  return view;
 }
 
 export async function updateUser(
@@ -489,7 +519,9 @@ export async function assignProjectToUser(
     {
       consultantId: id,
       payRate: input.payRate,
-      currency: DEFAULT_CURRENCY,
+      currency: input.currency ?? DEFAULT_CURRENCY,
+      ratePeriod: input.ratePeriod,
+      contractType: input.contractType,
       startDate: input.startDate,
       endDate: input.endDate ?? null,
       assignmentCode: input.assignmentCode ?? null,

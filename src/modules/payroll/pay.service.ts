@@ -1,6 +1,7 @@
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { COUNTRY_CODES, type CountryCode } from '../../utils/countries.js';
+import { DEFAULT_RATE_PERIOD, RATE_PERIODS, type RatePeriod } from '../../utils/assignments.js';
 import { hoursToMinutes } from '../timesheets/timesheets.rules.js';
 import * as repository from './pay.repository.js';
 import {
@@ -8,6 +9,8 @@ import {
   CONTRACT_TYPES,
   DEFAULT_PAY_TERMS,
   DEFAULT_PAYROLL_RULES,
+  hourlyRateFor,
+  rateOn,
   type ContractType,
   type PayBreakdown,
   type PayrollRules,
@@ -39,8 +42,12 @@ function oneOf<T extends string>(values: readonly T[], value: string, fallback: 
   return (values as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
+export function ratePeriodOf(value: string): RatePeriod {
+  return oneOf(RATE_PERIODS, value, DEFAULT_RATE_PERIOD);
+}
+
 export function toPayTermsView(
-  record: Omit<repository.PayTermsRecord, 'pay_rate' | 'currency'>,
+  record: Omit<repository.PayTermsRecord, 'pay_rate' | 'currency' | 'rate_period'>,
 ): PayTermsView {
   return {
     contractType: oneOf(CONTRACT_TYPES, record.contract_type, DEFAULT_PAY_TERMS.contractType),
@@ -52,8 +59,23 @@ export function toPayTermsView(
   };
 }
 
-export function toPayTerms(record: repository.PayTermsRecord): PayTerms {
-  return { payRate: Number(record.pay_rate), ...toPayTermsView(record) };
+export function toRateChanges(records: repository.RateChangeRecord[] | null | undefined) {
+  return (records ?? []).map((record) => ({
+    effectiveFrom: record.effective_from,
+    payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
+  }));
+}
+
+export function toPayTerms(
+  record: repository.PayTermsRecord & { rate_changes?: repository.RateChangeRecord[] | null },
+): PayTerms {
+  return {
+    payRate: Number(record.pay_rate),
+    ratePeriod: ratePeriodOf(record.rate_period),
+    rateChanges: toRateChanges(record.rate_changes),
+    ...toPayTermsView(record),
+  };
 }
 
 function toPayrollRules(record: repository.PayrollRulesRecord): PayrollRules {
@@ -155,9 +177,22 @@ async function payrollRulesByCountry(
   return new Map(rows.map((row) => [row.country_code, toPayrollRules(row)]));
 }
 
+const FROZEN_STATUSES = ['APPROVED', 'CLOSED', 'PAID'];
+
 export async function payForTimesheets(ids: number[]): Promise<Map<number, PayBreakdown>> {
-  const records = await repository.findTimesheetsForPay([...new Set(ids)]);
+  const uniqueIds = [...new Set(ids)];
   const result = new Map<number, PayBreakdown>();
+
+  if (!uniqueIds.length) return result;
+
+  for (const frozen of await repository.findFrozenPay(uniqueIds)) {
+    result.set(frozen.timesheet_id, frozen.breakdown as PayBreakdown);
+  }
+
+  const pending = uniqueIds.filter((id) => !result.has(id));
+  if (!pending.length) return result;
+
+  const records = await repository.findTimesheetsForPay(pending);
 
   if (!records.length) return result;
 
@@ -191,7 +226,31 @@ export async function payForTimesheets(ids: number[]): Promise<Map<number, PayBr
     );
   }
 
+  await repository.insertFrozenPay(
+    records
+      .filter((record) => record.assignment && FROZEN_STATUSES.includes(record.status))
+      .map((record) => {
+        const breakdown = result.get(record.id)!;
+        return {
+          timesheet_id: record.id,
+          currency: record.assignment!.currency,
+          hourly_rate: breakdown.hourlyRate,
+          minutes: breakdown.minutes,
+          amount: breakdown.amount,
+          breakdown,
+        };
+      }),
+  );
+
   return result;
+}
+
+export async function freezeTimesheetPay(timesheetId: number): Promise<void> {
+  try {
+    await payForTimesheets([timesheetId]);
+  } catch (error) {
+    logger.error({ err: error, timesheetId }, 'No fue posible congelar el pago del timesheet');
+  }
 }
 
 export type PaySummaryView = Omit<PayBreakdown, 'days'>;
@@ -208,12 +267,15 @@ export type PayAssignmentView = {
   isActive: boolean;
   assignmentCode: string | null;
   payRate: number;
+  ratePeriod: RatePeriod;
+  rateChanges: { id: number; effectiveFrom: string; payRate: number; ratePeriod: RatePeriod }[];
   currency: string;
   hourlyRate: number;
   payTerms: PayTermsView;
   consultant: { id: number; name: string; email: string } | null;
   project: { id: number; name: string; code: string | null } | null;
   client: { id: number; name: string } | null;
+  company: { id: number; name: string } | null;
 };
 
 function toPayAssignmentView(record: repository.PayAssignmentRecord): PayAssignmentView {
@@ -226,9 +288,20 @@ function toPayAssignmentView(record: repository.PayAssignmentRecord): PayAssignm
     isActive: record.is_active,
     assignmentCode: record.assignment_code,
     payRate: terms.payRate,
+    ratePeriod: terms.ratePeriod,
+    rateChanges: (record.rate_changes ?? [])
+      .map((change) => ({
+        id: change.id,
+        effectiveFrom: change.effective_from,
+        payRate: Number(change.pay_rate),
+        ratePeriod: ratePeriodOf(change.rate_period),
+      }))
+      .sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom)),
     currency: record.currency,
-    hourlyRate:
-      terms.hoursDivisor > 0 ? Number((terms.payRate / terms.hoursDivisor).toFixed(4)) : 0,
+    hourlyRate: hourlyRateFor({
+      ...terms,
+      ...rateOn(terms, new Date().toISOString().slice(0, 10)),
+    }),
     payTerms: toPayTermsView(record),
     consultant: record.consultant
       ? {
@@ -242,6 +315,12 @@ function toPayAssignmentView(record: repository.PayAssignmentRecord): PayAssignm
       : null,
     client: record.project?.client
       ? { id: record.project.client.id, name: record.project.client.client_name }
+      : null,
+    company: record.project?.client?.company
+      ? {
+          id: record.project.client.company.id,
+          name: record.project.client.company.trade_name,
+        }
       : null,
   };
 }
@@ -268,6 +347,7 @@ export async function updatePayTerms(
   const patch = {
     ...toPayTermsColumns(input),
     ...(input.payRate !== undefined ? { pay_rate: input.payRate } : {}),
+    ...(input.ratePeriod !== undefined ? { rate_period: input.ratePeriod } : {}),
   };
   const updated = await repository.updateAssignmentPayTerms(id, patch);
 

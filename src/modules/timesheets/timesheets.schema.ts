@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { EXPORT_FORMATS } from './timesheets.export.js';
 import {
   ACTIVITY_MAX_MINUTES,
   ACTIVITY_MIN_MINUTES,
@@ -61,6 +62,17 @@ export const saveDraftSchema = z
   );
 
 export const timesheetIdParamSchema = z.object({ id: positiveId });
+
+export const exportQuerySchema = z.object({
+  format: z.enum(EXPORT_FORMATS, { message: 'El formato debe ser xlsx o pdf' }).default('xlsx'),
+});
+
+export type ExportQuery = z.infer<typeof exportQuerySchema>;
+
+export const timesheetAttachmentParamsSchema = z.object({
+  id: positiveId,
+  attachmentId: positiveId,
+});
 
 export const currentTimesheetQuerySchema = z.object({
   assignmentId: positiveId,

@@ -19,6 +19,7 @@ import {
   listPendingQuerySchema,
   rejectStepSchema,
 } from './approvals.schema.js';
+import { exportQuerySchema } from '../timesheets/timesheets.schema.js';
 
 export const approvalsRouter: Router = Router();
 
@@ -46,6 +47,18 @@ approvalsRouter.get(
   '/:id/attachments/:attachmentId',
   validate({ params: attachmentParamsSchema }),
   asyncHandler(approvalsController.getAttachment),
+);
+
+approvalsRouter.get(
+  '/:id/export',
+  validate({ params: approvalIdParamSchema, query: exportQuerySchema }),
+  asyncHandler(approvalsController.exportTimesheet),
+);
+
+approvalsRouter.get(
+  '/:id/timesheet-attachments/:attachmentId',
+  validate({ params: attachmentParamsSchema }),
+  asyncHandler(approvalsController.getTimesheetAttachment),
 );
 
 approvalsRouter.post(

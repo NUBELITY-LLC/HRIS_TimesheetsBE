@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireAuth, requirePasswordChanged, requirePermission } from '../../middlewares/auth.js';
 import { validate } from '../../middlewares/validate.js';
+import { acceptEvidence } from '../../middlewares/upload.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import {
   PERMISSION_TIMESHEETS_APPROVE,
@@ -9,9 +10,11 @@ import {
 import * as timesheetsController from './timesheets.controller.js';
 import {
   currentTimesheetQuerySchema,
+  exportQuerySchema,
   listTimesheetsQuerySchema,
   saveDraftSchema,
   summaryQuerySchema,
+  timesheetAttachmentParamsSchema,
   timesheetIdParamSchema,
 } from './timesheets.schema.js';
 
@@ -78,4 +81,31 @@ timesheetsRouter.post(
   requirePermission(PERMISSION_TIMESHEETS_SUBMIT),
   validate({ params: timesheetIdParamSchema }),
   asyncHandler(timesheetsController.submit),
+);
+
+timesheetsRouter.post(
+  '/:id/attachments',
+  requirePermission(PERMISSION_TIMESHEETS_SUBMIT),
+  acceptEvidence,
+  validate({ params: timesheetIdParamSchema }),
+  asyncHandler(timesheetsController.attachEvidence),
+);
+
+timesheetsRouter.get(
+  '/:id/attachments/:attachmentId',
+  validate({ params: timesheetAttachmentParamsSchema }),
+  asyncHandler(timesheetsController.getEvidence),
+);
+
+timesheetsRouter.delete(
+  '/:id/attachments/:attachmentId',
+  requirePermission(PERMISSION_TIMESHEETS_SUBMIT),
+  validate({ params: timesheetAttachmentParamsSchema }),
+  asyncHandler(timesheetsController.removeEvidence),
+);
+
+timesheetsRouter.get(
+  '/:id/export',
+  validate({ params: timesheetIdParamSchema, query: exportQuerySchema }),
+  asyncHandler(timesheetsController.exportTimesheet),
 );

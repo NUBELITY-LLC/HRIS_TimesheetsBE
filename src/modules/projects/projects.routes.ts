@@ -6,6 +6,8 @@ import { PERMISSION_CATALOG_MANAGE } from '../../utils/permissions.js';
 import * as projectsController from './projects.controller.js';
 import {
   assignmentParamsSchema,
+  createRateChangeSchema,
+  rateChangeParamsSchema,
   closeProjectSchema,
   createAssignmentSchema,
   createProjectSchema,
@@ -72,6 +74,18 @@ projectsRouter.patch(
   '/:id/assignments/:assignmentId',
   validate({ params: assignmentParamsSchema, body: updateAssignmentSchema }),
   asyncHandler(projectsController.updateAssignment),
+);
+
+projectsRouter.post(
+  '/:id/assignments/:assignmentId/rates',
+  validate({ params: assignmentParamsSchema, body: createRateChangeSchema }),
+  asyncHandler(projectsController.addRateChange),
+);
+
+projectsRouter.delete(
+  '/:id/assignments/:assignmentId/rates/:rateId',
+  validate({ params: rateChangeParamsSchema }),
+  asyncHandler(projectsController.removeRateChange),
 );
 
 projectsRouter.delete(
