@@ -275,6 +275,7 @@ export type PayAssignmentView = {
   consultant: { id: number; name: string; email: string } | null;
   project: { id: number; name: string; code: string | null } | null;
   client: { id: number; name: string } | null;
+  company: { id: number; name: string } | null;
 };
 
 function toPayAssignmentView(record: repository.PayAssignmentRecord): PayAssignmentView {
@@ -315,6 +316,12 @@ function toPayAssignmentView(record: repository.PayAssignmentRecord): PayAssignm
     client: record.project?.client
       ? { id: record.project.client.id, name: record.project.client.client_name }
       : null,
+    company: record.project?.client?.company
+      ? {
+          id: record.project.client.company.id,
+          name: record.project.client.company.trade_name,
+        }
+      : null,
   };
 }
 
@@ -340,6 +347,7 @@ export async function updatePayTerms(
   const patch = {
     ...toPayTermsColumns(input),
     ...(input.payRate !== undefined ? { pay_rate: input.payRate } : {}),
+    ...(input.ratePeriod !== undefined ? { rate_period: input.ratePeriod } : {}),
   };
   const updated = await repository.updateAssignmentPayTerms(id, patch);
 

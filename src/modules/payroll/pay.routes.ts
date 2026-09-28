@@ -9,8 +9,10 @@ import {
   countryParamSchema,
   listPayAssignmentsQuerySchema,
   payrollRulesSchema,
+  rateChangeParamSchema,
   updatePayTermsSchema,
 } from './pay.schema.js';
+import { createRateChangeSchema } from '../projects/projects.schema.js';
 
 export const payrollRouter: Router = Router();
 
@@ -44,4 +46,16 @@ payrollRouter.patch(
   '/assignments/:id',
   validate({ params: assignmentIdParamSchema, body: updatePayTermsSchema }),
   asyncHandler(payController.updateAssignment),
+);
+
+payrollRouter.post(
+  '/assignments/:id/rates',
+  validate({ params: assignmentIdParamSchema, body: createRateChangeSchema }),
+  asyncHandler(payController.addRateChange),
+);
+
+payrollRouter.delete(
+  '/assignments/:id/rates/:rateId',
+  validate({ params: rateChangeParamSchema }),
+  asyncHandler(payController.removeRateChange),
 );

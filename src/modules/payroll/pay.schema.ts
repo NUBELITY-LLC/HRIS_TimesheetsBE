@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { COUNTRY_CODES } from '../../utils/countries.js';
 import { CONTRACT_TYPES } from './pay.rules.js';
+import { RATE_PERIODS } from '../../utils/assignments.js';
 
 function twoDecimals(value: number): boolean {
   return Number((value * 100).toFixed(0)) / 100 === value;
@@ -108,6 +109,11 @@ export const assignmentIdParamSchema = z.object({
   id: z.coerce.number().int().positive('El id debe ser mayor que cero'),
 });
 
+export const rateChangeParamSchema = z.object({
+  id: z.coerce.number().int().positive('El id debe ser mayor que cero'),
+  rateId: z.coerce.number().int().positive('El id debe ser mayor que cero'),
+});
+
 export const updatePayTermsSchema = z
   .object({
     ...payTermsShape,
@@ -116,6 +122,9 @@ export const updatePayTermsSchema = z
       .nonnegative('La tarifa no puede ser negativa')
       .max(99_999_999.99, 'La tarifa excede el maximo permitido')
       .refine(twoDecimals, 'La tarifa admite como maximo 2 decimales')
+      .optional(),
+    ratePeriod: z
+      .enum(RATE_PERIODS, { message: 'El periodo debe ser por hora, mensual o anual' })
       .optional(),
   })
   .refine((value) => Object.values(value).some((field) => field !== undefined), {

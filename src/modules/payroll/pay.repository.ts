@@ -137,7 +137,11 @@ export type PayAssignmentRecord = PayTermsRecord & {
     id: number;
     project_name: string;
     code: string | null;
-    client: { id: number; client_name: string } | null;
+    client: {
+      id: number;
+      client_name: string;
+      company: { id: number; trade_name: string } | null;
+    } | null;
   } | null;
 };
 
@@ -145,7 +149,8 @@ const PAY_ASSIGNMENT_COLUMNS =
   `id, start_date, end_date, is_active, assignment_code, ${PAY_TERMS_COLUMNS}, ` +
   `rate_changes:ASSIGNMENT_RATE_CHANGES(${RATE_CHANGE_COLUMNS}), ` +
   'consultant:USERS!inner(id, full_name, email), ' +
-  'project:PROJECTS!inner(id, project_name, code, client:CLIENTS!inner(id, client_name))';
+  'project:PROJECTS!inner(id, project_name, code, ' +
+  'client:CLIENTS!inner(id, client_name, company:COMPANIES(id, trade_name)))';
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`);
@@ -182,7 +187,7 @@ export async function findPayAssignments(filters: {
 
 export async function updateAssignmentPayTerms(
   id: number,
-  patch: PayTermsColumns & { pay_rate?: number },
+  patch: PayTermsColumns & { pay_rate?: number; rate_period?: string },
 ): Promise<PayAssignmentRecord | null> {
   const { data, error } = await supabase
     .from('PROJECT_ASSIGNMENTS')
