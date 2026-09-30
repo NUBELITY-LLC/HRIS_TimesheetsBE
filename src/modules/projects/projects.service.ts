@@ -385,16 +385,16 @@ async function resolveConsultant(consultantId: number): Promise<UserRef> {
   const consultant = await repository.findUserById(consultantId);
 
   if (!consultant) {
-    throw ApiError.badRequest('La persona indicada no existe', { field: 'consultantId' });
+    throw ApiError.badRequest('El colaborador indicado no existe', { field: 'consultantId' });
   }
 
   if (!consultant.is_active) {
-    throw ApiError.unprocessable('La persona esta inactiva', { field: 'consultantId' });
+    throw ApiError.unprocessable('El colaborador esta inactivo', { field: 'consultantId' });
   }
 
   if (!ASSIGNABLE_ROLES.includes(consultant.role?.code ?? '')) {
     throw ApiError.unprocessable(
-      `Solo se asignan personas con rol ${ASSIGNABLE_ROLES.join(' o ')}`,
+      `Solo se asignan colaboradores con rol ${ASSIGNABLE_ROLES.join(' o ')}`,
       { field: 'consultantId', allowedRoles: ASSIGNABLE_ROLES },
     );
   }
@@ -436,7 +436,7 @@ export async function assignConsultant(
   if (activeSteps < MIN_APPROVAL_STEPS) {
     throw new ApiError(
       422,
-      `Configura el flujo de aprobacion del proyecto (minimo ${MIN_APPROVAL_STEPS} aprobadores) antes de asignar personas`,
+      `Configura el flujo de aprobacion del proyecto (minimo ${MIN_APPROVAL_STEPS} aprobadores) antes de asignar colaboradores`,
       'INCOMPLETE_APPROVAL_WORKFLOW',
       { steps: activeSteps, minApprovers: MIN_APPROVAL_STEPS },
     );
@@ -457,7 +457,7 @@ export async function assignConsultant(
   );
 
   if (overlapping) {
-    throw ApiError.conflict('Esa persona ya tiene una asignacion activa que traslapa esas fechas');
+    throw ApiError.conflict('Ese colaborador ya tiene una asignacion activa que traslapa esas fechas');
   }
 
   const created = await repository.insertAssignment({
@@ -477,7 +477,7 @@ export async function assignConsultant(
 
   logger.info(
     { assignmentId: created.id, projectId, consultantId: input.consultantId, createdBy: actor.id },
-    'Persona asignada al proyecto',
+    'Colaborador asignado al proyecto',
   );
 
   return toAssignmentView(created);

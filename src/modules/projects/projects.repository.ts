@@ -188,7 +188,7 @@ function throwIfProjectDuplicate(error: { code?: string }): void {
 
 function throwIfAssignmentDuplicate(error: { code?: string }): void {
   if (error.code === UNIQUE_VIOLATION) {
-    throw ApiError.conflict('Esa persona ya tiene una asignacion en el proyecto con esa fecha de inicio');
+    throw ApiError.conflict('Ese colaborador ya tiene una asignacion en el proyecto con esa fecha de inicio');
   }
 }
 

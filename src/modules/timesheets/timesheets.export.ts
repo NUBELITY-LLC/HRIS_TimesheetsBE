@@ -21,8 +21,9 @@ export type ActivityLogCosts = {
 
 export type ActivityLog = {
   code: string;
+  consultantName: string;
+  assignmentCode: string | null;
   projectName: string;
-  monthlyHours: number;
   dailyHours: number;
   periodStart: string;
   periodEnd: string;
@@ -49,32 +50,75 @@ const COLORS = {
   ink: '1F2937',
 };
 
+type ColumnKey =
+  | 'id'
+  | 'collaborator'
+  | 'period'
+  | 'date'
+  | 'day'
+  | 'hours'
+  | 'activity'
+  | 'notes'
+  | 'rate'
+  | 'amount';
+
+type Column = { key: ColumnKey; header: string; width: number; pdfWidth: number };
+
 type Layout = {
   title: string;
-  headers: string[];
-  widths: number[];
-  pdfWidths: number[];
+  columns: Column[];
   lastColumn: string;
 };
 
-const DETAIL_LAYOUT: Layout = {
-  title: 'ACTIVITY LOG',
-  headers: ['Resource', 'Period', 'Date', 'Day', 'Hours', 'Activity', 'Notes'],
-  widths: [24, 25, 13, 14, 9, 88.29, 36.71],
-  pdfWidths: [108, 112, 56, 58, 34, 0, 130],
-  lastColumn: 'G',
+const COLUMNS: Record<ColumnKey, Column> = {
+  id: { key: 'id', header: 'ID', width: 22, pdfWidth: 90 },
+  collaborator: { key: 'collaborator', header: 'Collaborator', width: 28, pdfWidth: 110 },
+  period: { key: 'period', header: 'Period', width: 25, pdfWidth: 112 },
+  date: { key: 'date', header: 'Date', width: 13, pdfWidth: 56 },
+  day: { key: 'day', header: 'Day', width: 14, pdfWidth: 58 },
+  hours: { key: 'hours', header: 'Hours', width: 12, pdfWidth: 40 },
+  activity: { key: 'activity', header: 'Activity', width: 88.29, pdfWidth: 0 },
+  notes: { key: 'notes', header: 'Notes', width: 36.71, pdfWidth: 130 },
+  rate: { key: 'rate', header: 'Hourly rate', width: 16, pdfWidth: 90 },
+  amount: { key: 'amount', header: 'Amount', width: 16, pdfWidth: 90 },
 };
 
-const SUMMARY_LAYOUT: Layout = {
-  title: 'HOURS SUMMARY',
-  headers: ['Resource', 'Period', 'Date', 'Day', 'Hours', 'Hourly rate', 'Amount'],
-  widths: [24, 25, 13, 16, 16, 16, 16],
-  pdfWidths: [0, 150, 70, 70, 50, 90, 90],
-  lastColumn: 'G',
-};
+const DETAIL_KEYS: ColumnKey[] = [
+  'collaborator',
+  'period',
+  'date',
+  'day',
+  'hours',
+  'activity',
+  'notes',
+];
+
+const SUMMARY_KEYS: ColumnKey[] = ['collaborator', 'period', 'date', 'hours', 'rate', 'amount'];
+
+function columnLetter(index: number): string {
+  return String.fromCharCode(65 + index);
+}
 
 function layoutOf(log: ActivityLog): Layout {
-  return log.costs ? SUMMARY_LAYOUT : DETAIL_LAYOUT;
+  const keys = log.costs ? SUMMARY_KEYS : DETAIL_KEYS;
+  const columns = [...(log.assignmentCode ? (['id'] as ColumnKey[]) : []), ...keys].map(
+    (key) => COLUMNS[key],
+  );
+
+  if (log.costs) {
+    const collaborator = columns.find((column) => column.key === 'collaborator')!;
+    columns[columns.indexOf(collaborator)] = { ...collaborator, pdfWidth: 0 };
+  }
+
+  return {
+    title: log.costs ? 'HOURS SUMMARY' : 'ACTIVITY LOG',
+    columns,
+    lastColumn: columnLetter(columns.length - 1),
+  };
+}
+
+function columnIndex(layout: Layout, key: ColumnKey): number {
+  return layout.columns.findIndex((column) => column.key === key);
 }
 
 function formatAmount(value: number, currency: string): string {
@@ -94,22 +138,22 @@ function ratesLabel(costs: ActivityLogCosts): string {
     .join(' · ');
 }
 
-function rowValues(log: ActivityLog, entry: ActivityLogRow): string[] {
-  const base = [
-    log.code,
-    periodLabel(log),
-    displayDate(entry.date),
-    weekday(entry.date),
-    String(entry.hours),
-  ];
+function rowValues(log: ActivityLog, layout: Layout, entry: ActivityLogRow): string[] {
+  const currency = log.costs?.currency ?? '';
+  const values: Record<ColumnKey, string> = {
+    id: log.assignmentCode ?? '',
+    collaborator: log.consultantName,
+    period: periodLabel(log),
+    date: displayDate(entry.date),
+    day: weekday(entry.date),
+    hours: String(entry.hours),
+    activity: entry.activity,
+    notes: entry.note ?? '',
+    rate: formatAmount(entry.hourlyRate ?? 0, currency),
+    amount: formatAmount(entry.amount ?? 0, currency),
+  };
 
-  return log.costs
-    ? [
-        ...base,
-        formatAmount(entry.hourlyRate ?? 0, log.costs.currency),
-        formatAmount(entry.amount ?? 0, log.costs.currency),
-      ]
-    : [...base, entry.activity, entry.note ?? ''];
+  return layout.columns.map((column) => values[column.key]);
 }
 
 export function nameInitials(fullName: string): string {
@@ -154,7 +198,15 @@ function workdayLabel(log: ActivityLog): string {
 }
 
 function totalHours(log: ActivityLog): number {
-  return log.rows.reduce((total, row) => total + row.hours, 0);
+  return Math.round(log.rows.reduce((total, row) => total + row.hours, 0) * 100) / 100;
+}
+
+function hoursLabel(log: ActivityLog): string {
+  return log.costs ? 'Period hours' : 'Hours worked';
+}
+
+function hoursValue(log: ActivityLog): number {
+  return totalHours(log);
 }
 
 async function renderXlsx(log: ActivityLog): Promise<Buffer> {
@@ -171,7 +223,7 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   });
 
   const layout = layoutOf(log);
-  sheet.columns = layout.widths.map((width) => ({ width }));
+  sheet.columns = layout.columns.map((column) => ({ width: column.width }));
 
   const rule: Partial<ExcelJS.Borders> = {
     bottom: { style: 'thin', color: { argb: `FF${COLORS.rule}` } },
@@ -185,7 +237,7 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   const whiteBold = { bold: true, color: { argb: `FF${COLORS.white}` }, name: 'Calibri' };
 
   const styleRow = (row: ExcelJS.Row) => {
-    for (let column = 1; column <= layout.headers.length; column += 1) {
+    for (let column = 1; column <= layout.columns.length; column += 1) {
       const cell = row.getCell(column);
       cell.border = rule;
       cell.alignment = wrapTop;
@@ -204,8 +256,8 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   styleRow(project);
   project.getCell(1).value = 'Project';
   project.getCell(2).value = log.projectName;
-  project.getCell(4).value = 'Monthly hours';
-  project.getCell(5).value = log.monthlyHours;
+  project.getCell(4).value = hoursLabel(log);
+  project.getCell(5).value = hoursValue(log);
   project.getCell(1).font = { bold: true };
   project.getCell(4).font = { bold: true };
 
@@ -244,9 +296,9 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   period.border = rule;
 
   const header = sheet.getRow(6);
-  layout.headers.forEach((label, index) => {
+  layout.columns.forEach((column, index) => {
     const cell = header.getCell(index + 1);
-    cell.value = label;
+    cell.value = column.header;
     cell.font = whiteBold;
     cell.fill = fill(COLORS.header);
     cell.alignment = wrapTop;
@@ -254,45 +306,73 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   });
 
   const firstDataRow = 7;
+  const amountFormat = `#,##0.00 "${log.costs?.currency ?? ''}"`;
   log.rows.forEach((entry, index) => {
     const row = sheet.getRow(firstDataRow + index);
     styleRow(row);
-    row.getCell(1).value = log.code;
-    row.getCell(2).value = periodLabel(log);
-    row.getCell(3).value = utcDate(entry.date);
-    row.getCell(3).numFmt = 'mm/dd/yyyy';
-    row.getCell(4).value = weekday(entry.date);
-    row.getCell(5).value = entry.hours;
-    if (log.costs) {
-      const amountFormat = `#,##0.00 "${log.costs.currency}"`;
-      row.getCell(6).value = entry.hourlyRate ?? 0;
-      row.getCell(6).numFmt = amountFormat;
-      row.getCell(7).value = entry.amount ?? 0;
-      row.getCell(7).numFmt = amountFormat;
-    } else {
-      row.getCell(6).value = entry.activity;
-      row.getCell(7).value = entry.note ?? null;
-    }
+    layout.columns.forEach((column, columnIndex) => {
+      const cell = row.getCell(columnIndex + 1);
+      switch (column.key) {
+        case 'id':
+          cell.value = log.assignmentCode;
+          break;
+        case 'collaborator':
+          cell.value = log.consultantName;
+          break;
+        case 'period':
+          cell.value = periodLabel(log);
+          break;
+        case 'date':
+          cell.value = utcDate(entry.date);
+          cell.numFmt = 'mm/dd/yyyy';
+          break;
+        case 'day':
+          cell.value = weekday(entry.date);
+          break;
+        case 'hours':
+          cell.value = entry.hours;
+          break;
+        case 'activity':
+          cell.value = entry.activity;
+          break;
+        case 'notes':
+          cell.value = entry.note ?? null;
+          break;
+        case 'rate':
+          cell.value = entry.hourlyRate ?? 0;
+          cell.numFmt = amountFormat;
+          break;
+        case 'amount':
+          cell.value = entry.amount ?? 0;
+          cell.numFmt = amountFormat;
+          break;
+      }
+    });
   });
 
   const lastDataRow = firstDataRow + Math.max(log.rows.length, 1) - 1;
   const totalRow = sheet.getRow(lastDataRow + 1);
   styleRow(totalRow);
-  totalRow.getCell(4).value = 'TOTAL';
-  totalRow.getCell(4).font = { bold: true };
-  totalRow.getCell(5).value = {
-    formula: `SUM(E${firstDataRow}:E${lastDataRow})`,
+  const hoursIndex = columnIndex(layout, 'hours');
+  const hoursColumn = columnLetter(hoursIndex);
+  totalRow.getCell(hoursIndex).value = 'TOTAL';
+  totalRow.getCell(hoursIndex).font = { bold: true };
+  totalRow.getCell(hoursIndex + 1).value = {
+    formula: `SUM(${hoursColumn}${firstDataRow}:${hoursColumn}${lastDataRow})`,
     result: totalHours(log),
   };
-  totalRow.getCell(5).font = { bold: true };
+  totalRow.getCell(hoursIndex + 1).font = { bold: true };
 
   if (log.costs) {
-    totalRow.getCell(7).value = {
-      formula: `SUM(G${firstDataRow}:G${lastDataRow})`,
+    const amountIndex = columnIndex(layout, 'amount');
+    const amountColumn = columnLetter(amountIndex);
+    const cell = totalRow.getCell(amountIndex + 1);
+    cell.value = {
+      formula: `SUM(${amountColumn}${firstDataRow}:${amountColumn}${lastDataRow})`,
       result: log.costs.amount,
     };
-    totalRow.getCell(7).numFmt = `#,##0.00 "${log.costs.currency}"`;
-    totalRow.getCell(7).font = { bold: true };
+    cell.numFmt = amountFormat;
+    cell.font = { bold: true };
   }
 
   return Buffer.from(await workbook.xlsx.writeBuffer());
@@ -310,8 +390,8 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
     const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
     const bottom = doc.page.height - doc.page.margins.bottom;
     const layout = layoutOf(log);
-    const fixed = layout.pdfWidths.reduce((sum, value) => sum + value, 0);
-    const columns = layout.pdfWidths.map((value) => value || width - fixed);
+    const fixed = layout.columns.reduce((sum, column) => sum + column.pdfWidth, 0);
+    const columns = layout.columns.map((column) => column.pdfWidth || width - fixed);
     const padding = 4;
     const fontSize = 8;
 
@@ -372,7 +452,12 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
     };
 
     const header = () =>
-      place(cells(layout.headers, { bold: true, fillColor: COLORS.header }));
+      place(
+        cells(
+          layout.columns.map((column) => column.header),
+          { bold: true, fillColor: COLORS.header },
+        ),
+      );
 
     band(`${layout.title} — ${log.code}`, COLORS.title, 14, 'center');
     doc.moveDown(0.6);
@@ -380,7 +465,7 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
     doc.fillColor(`#${COLORS.ink}`).fontSize(9);
     const info: [string, string][] = [
       ['Project', log.projectName],
-      ['Monthly hours', String(log.monthlyHours)],
+      [hoursLabel(log), String(hoursValue(log))],
       ['Schedule', workdayLabel(log)],
       ...(log.costs
         ? ([
@@ -404,7 +489,7 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
     header();
 
     for (const entry of log.rows) {
-      const row = cells(rowValues(log, entry), {});
+      const row = cells(rowValues(log, layout, entry), {});
 
       if (doc.y + row.height > bottom) {
         doc.addPage();
@@ -414,13 +499,14 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
       place(row);
     }
 
+    const hoursIndex = columnIndex(layout, 'hours');
     const total = cells(
-      layout.headers.map((_, index) =>
-        index === 3
+      layout.columns.map((column, index) =>
+        index === hoursIndex - 1
           ? 'TOTAL'
-          : index === 4
+          : column.key === 'hours'
             ? String(totalHours(log))
-            : index === 6 && log.costs
+            : column.key === 'amount' && log.costs
               ? formatAmount(log.costs.amount, log.costs.currency)
               : '',
       ),

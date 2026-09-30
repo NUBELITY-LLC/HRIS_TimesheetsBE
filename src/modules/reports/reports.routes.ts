@@ -4,7 +4,13 @@ import { validate } from '../../middlewares/validate.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import { PERMISSION_REPORTS_VIEW } from '../../utils/permissions.js';
 import * as reportsController from './reports.controller.js';
-import { hoursReportQuerySchema, listPeopleQuerySchema } from './reports.schema.js';
+import {
+  companyExportQuerySchema,
+  companyReportQuerySchema,
+  hoursExportQuerySchema,
+  hoursReportQuerySchema,
+  listPeopleQuerySchema,
+} from './reports.schema.js';
 
 export const reportsRouter: Router = Router();
 
@@ -16,8 +22,28 @@ reportsRouter.get(
   asyncHandler(reportsController.listPeople),
 );
 
+reportsRouter.get('/scopes', asyncHandler(reportsController.listScopes));
+
 reportsRouter.get(
   '/hours',
   validate({ query: hoursReportQuerySchema }),
   asyncHandler(reportsController.hoursReport),
+);
+
+reportsRouter.get(
+  '/company',
+  validate({ query: companyReportQuerySchema }),
+  asyncHandler(reportsController.companyReport),
+);
+
+reportsRouter.get(
+  '/hours/export',
+  validate({ query: hoursExportQuerySchema }),
+  asyncHandler(reportsController.exportHoursReport),
+);
+
+reportsRouter.get(
+  '/company/export',
+  validate({ query: companyExportQuerySchema }),
+  asyncHandler(reportsController.exportCompanyReport),
 );

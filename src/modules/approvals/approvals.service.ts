@@ -19,6 +19,7 @@ import {
 } from '../timesheets/timesheets.repository.js';
 import {
   exportTimesheetById,
+  findFortnightTimesheets,
   signTimesheetAttachment,
   toTimesheetAttachmentView,
   type TimesheetAttachmentView,
@@ -656,13 +657,27 @@ export async function exportApprovalTimesheet(
     return exportTimesheetById(timesheet.id, format);
   }
 
-  const pay = (await payFor([timesheet.id], actor)).get(timesheet.id);
+  const { period, timesheetIds } = await findFortnightTimesheets(timesheet.id);
+  const pay = await payFor(timesheetIds, actor);
+  const days = [...pay.values()]
+    .flatMap((breakdown) => breakdown.days)
+    .filter((day) => day.date >= period.from && day.date <= period.to)
+    .sort((left, right) => left.date.localeCompare(right.date));
+  const rates = days.reduce<{ from: string; hourlyRate: number }[]>((spans, day) => {
+    const previous = spans[spans.length - 1];
+    return previous && previous.hourlyRate === day.hourlyRate
+      ? spans
+      : [...spans, { from: day.date, hourlyRate: day.hourlyRate }];
+  }, []);
+  const amount = days.reduce((total, day) => total + day.amount, 0);
 
   return exportTimesheetById(timesheet.id, format, {
     currency: timesheet.assignment?.currency ?? '',
-    amount: pay?.amount ?? 0,
-    rates: pay?.rates ?? [],
-    days: (pay?.days ?? []).map((day) => ({
+    amount: Math.round(amount * 100) / 100,
+    rates,
+    periodStart: period.from,
+    periodEnd: period.to,
+    days: days.map((day) => ({
       date: day.date,
       minutes: day.minutes,
       hourlyRate: day.hourlyRate,
