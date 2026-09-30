@@ -922,8 +922,45 @@ export async function getTeamSummary(
 }
 
 export type ExportCosts = ActivityLogCosts & {
+  periodStart: string;
+  periodEnd: string;
   days: { date: string; minutes: number; hourlyRate: number; amount: number }[];
 };
+
+const FORTNIGHT_STATUSES: TimesheetStatus[] = ['SUBMITTED', 'IN_REVIEW', 'APPROVED', 'CLOSED', 'PAID'];
+
+function isoOf(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+export function fortnightOf(iso: string): { from: string; to: string } {
+  const [year, month, day] = iso.split('-').map(Number) as [number, number, number];
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+  return day <= 15
+    ? { from: isoOf(year, month, 1), to: isoOf(year, month, 15) }
+    : { from: isoOf(year, month, 16), to: isoOf(year, month, lastDay) };
+}
+
+export async function findFortnightTimesheets(
+  timesheetId: number,
+): Promise<{ period: { from: string; to: string }; timesheetIds: number[] }> {
+  const record = await repository.findTimesheetById(timesheetId);
+
+  if (!record) {
+    throw ApiError.notFound('El timesheet no existe');
+  }
+
+  const period = fortnightOf(record.week_start_date);
+  const ids = await repository.findAssignmentTimesheetIdsInRange({
+    assignmentId: record.assignment_id,
+    from: period.from,
+    to: period.to,
+    statuses: FORTNIGHT_STATUSES,
+  });
+
+  return { period, timesheetIds: ids.includes(record.id) ? ids : [...ids, record.id] };
+}
 
 export async function exportTimesheetById(
   timesheetId: number,
@@ -967,11 +1004,12 @@ export async function exportTimesheetById(
   return renderActivityLog(
     {
       code: activityLogCode(assignment.start_date, assignment.consultant?.full_name ?? ''),
+      consultantName: assignment.consultant?.full_name ?? '',
+      assignmentCode: assignment.assignment_code?.trim() || null,
       projectName: assignment.project?.project_name ?? '',
-      monthlyHours: Number(assignment.hours_divisor),
       dailyHours: Number(assignment.daily_hours),
-      periodStart: record.week_start_date,
-      periodEnd: record.week_end_date,
+      periodStart: costs?.periodStart ?? record.week_start_date,
+      periodEnd: costs?.periodEnd ?? record.week_end_date,
       rows: costs
         ? costs.days.map((day) => ({
             date: day.date,
