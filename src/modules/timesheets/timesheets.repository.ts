@@ -538,6 +538,7 @@ export async function deleteTimesheetAttachment(id: number): Promise<void> {
 
 export type ExportAssignmentRecord = {
   start_date: string;
+  assignment_code: string | null;
   country_code: string;
   hours_divisor: number;
   daily_hours: number;
@@ -551,7 +552,7 @@ export async function findExportAssignment(
   const { data, error } = await supabase
     .from('PROJECT_ASSIGNMENTS')
     .select(
-      'start_date, country_code, hours_divisor, daily_hours, ' +
+      'start_date, assignment_code, country_code, hours_divisor, daily_hours, ' +
         'consultant:USERS!inner(full_name), project:PROJECTS!inner(project_name)',
     )
     .eq('id', assignmentId)
@@ -560,6 +561,26 @@ export async function findExportAssignment(
   if (error) fail('findExportAssignment', error);
 
   return (data as unknown as ExportAssignmentRecord | null) ?? null;
+}
+
+export async function findAssignmentTimesheetIdsInRange(params: {
+  assignmentId: number;
+  from: string;
+  to: string;
+  statuses: TimesheetStatus[];
+}): Promise<number[]> {
+  const { data, error } = await supabase
+    .from('TIMESHEETS')
+    .select('id')
+    .eq('assignment_id', params.assignmentId)
+    .in('status', params.statuses)
+    .lte('week_start_date', params.to)
+    .gte('week_end_date', params.from)
+    .order('week_start_date', { ascending: true });
+
+  if (error) fail('findAssignmentTimesheetIdsInRange', error);
+
+  return (data ?? []).map((row) => row.id);
 }
 
 export async function findHolidaysInRange(params: {
