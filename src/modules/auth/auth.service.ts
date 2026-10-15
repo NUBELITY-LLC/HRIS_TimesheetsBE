@@ -7,7 +7,7 @@ import { parseDbTimestamp } from '../../utils/timestamps.js';
 import { PERMISSION_CODES } from '../../utils/permissions.js';
 import * as authRepository from './auth.repository.js';
 import type { UserCredentialsRecord } from './auth.repository.js';
-import type { ChangePasswordInput, LoginInput } from './auth.schema.js';
+import type { ChangePasswordInput, LoginInput, UpdateLocaleInput } from './auth.schema.js';
 
 export type AuthenticatedUser = {
   id: number;
@@ -17,6 +17,7 @@ export type AuthenticatedUser = {
   jobTitle: string | null;
   lastLoginAt: string | null;
   mustChangePassword: boolean;
+  locale: 'es' | 'en';
   role: { id: number; code: string; name: string };
   permissions: string[];
 };
@@ -69,6 +70,7 @@ async function toAuthenticatedUser(record: UserCredentialsRecord): Promise<Authe
     jobTitle: record.job_title,
     lastLoginAt: record.last_login_at,
     mustChangePassword: record.must_change_password,
+    locale: record.locale,
     role: record.role,
     permissions: await permissionsOf(record.id),
   };
@@ -173,6 +175,14 @@ export async function getProfile(userId: number): Promise<AuthenticatedUser> {
   assertActiveAccount(record.is_active);
 
   return await toAuthenticatedUser(record);
+}
+
+export async function updateLocale(
+  userId: number,
+  input: UpdateLocaleInput,
+): Promise<{ locale: UpdateLocaleInput['locale'] }> {
+  await authRepository.updateLocale(userId, input.locale);
+  return { locale: input.locale };
 }
 
 export async function changePassword(

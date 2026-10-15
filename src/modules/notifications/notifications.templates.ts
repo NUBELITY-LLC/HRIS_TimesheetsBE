@@ -1,4 +1,7 @@
+export type EmailLocale = 'es' | 'en';
+
 export type EmailContent = {
+  locale?: EmailLocale;
   recipientName: string | null;
   heading: string;
   paragraphs: string[];
@@ -8,7 +11,11 @@ export type EmailContent = {
 };
 
 const BRAND = 'Nubelity HRIS';
-const CLOSING = `Recibes este correo porque tienes una cuenta en ${BRAND}.`;
+
+const GREETINGS: Record<EmailLocale, { named: (name: string) => string; plain: string }> = {
+  es: { named: (name) => `Hola ${name},`, plain: 'Hola,' },
+  en: { named: (name) => `Hi ${name},`, plain: 'Hi,' },
+};
 
 function escapeHtml(value: string): string {
   return value
@@ -26,7 +33,8 @@ function presentDetails(content: EmailContent): [string, string][] {
 }
 
 function greeting(content: EmailContent): string {
-  return content.recipientName ? `Hola ${content.recipientName},` : 'Hola,';
+  const greetings = GREETINGS[content.locale ?? 'es'];
+  return content.recipientName ? greetings.named(content.recipientName) : greetings.plain;
 }
 
 function renderText(content: EmailContent): string {
@@ -44,8 +52,6 @@ function renderText(content: EmailContent): string {
   if (content.footnote) {
     lines.push('', content.footnote);
   }
-
-  lines.push('', '--', CLOSING);
 
   return lines.join('\n');
 }
@@ -86,7 +92,6 @@ function renderHtml(content: EmailContent): string {
       : '') +
     action +
     footnote +
-    `<p style="margin:24px 0 0;color:#9ca3af;font-size:12px">${CLOSING}</p>` +
     '</td></tr></table></td></tr></table></body></html>'
   );
 }

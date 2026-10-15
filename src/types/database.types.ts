@@ -22,6 +22,7 @@ type UsersRow = {
   last_login_at: string | null;
   is_active: boolean;
   must_change_password: boolean;
+  locale: 'es' | 'en';
 };
 
 type UserPermissionsRow = {
@@ -297,6 +298,7 @@ export type Database = {
           | 'last_login_at'
           | 'is_active'
           | 'must_change_password'
+          | 'locale'
         >;
         Update: Partial<UsersRow>;
         Relationships: [ForeignKey<'role_id', 'ROLES'>];

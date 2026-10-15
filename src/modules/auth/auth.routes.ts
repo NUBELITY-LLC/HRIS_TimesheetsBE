@@ -5,7 +5,7 @@ import { validate } from '../../middlewares/validate.js';
 import { requireAuth } from '../../middlewares/auth.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as authController from './auth.controller.js';
-import { changePasswordSchema, loginSchema } from './auth.schema.js';
+import { changePasswordSchema, loginSchema, updateLocaleSchema } from './auth.schema.js';
 
 const loginRateLimiter = rateLimit({
   windowMs: env.LOGIN_RATE_LIMIT_WINDOW_MINUTES * 60_000,
@@ -31,6 +31,13 @@ authRouter.post(
 );
 
 authRouter.get('/me', requireAuth, asyncHandler(authController.me));
+
+authRouter.patch(
+  '/me/locale',
+  requireAuth,
+  validate({ body: updateLocaleSchema }),
+  asyncHandler(authController.updateLocale),
+);
 
 authRouter.post(
   '/change-password',

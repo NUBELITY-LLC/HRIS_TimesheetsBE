@@ -99,6 +99,7 @@ export type ClaimedNotificationEmail = {
   recipientEmail: string;
   recipientName: string | null;
   recipientActive: boolean;
+  recipientLocale: string | null;
   submissionCode: string | null;
   weekStart: string | null;
   weekEnd: string | null;
@@ -106,6 +107,10 @@ export type ClaimedNotificationEmail = {
   consultantName: string | null;
   projectName: string | null;
   clientName: string | null;
+  companyName: string | null;
+  startDate: string | null;
+  projectNames: string[] | null;
+  comments: string | null;
 };
 
 export type EmailOutboxFilter = {
@@ -126,24 +131,6 @@ export async function claimEmails(
   if (error) fail('claimEmails', error);
 
   return (data ?? []) as unknown as ClaimedNotificationEmail[];
-}
-
-export async function skipPendingEmails(
-  filter: Omit<EmailOutboxFilter, 'limit'>,
-): Promise<number> {
-  let query = supabase
-    .from('NOTIFICATIONS')
-    .update({ email_status: 'SKIPPED' })
-    .eq('email_status', 'PENDING');
-
-  if (filter.timesheetId !== undefined) query = query.eq('timesheet_id', filter.timesheetId);
-  if (filter.userId !== undefined) query = query.eq('user_id', filter.userId);
-
-  const { data, error } = await query.select('id');
-
-  if (error) fail('skipPendingEmails', error);
-
-  return (data ?? []).length;
 }
 
 export type EmailOutcome =

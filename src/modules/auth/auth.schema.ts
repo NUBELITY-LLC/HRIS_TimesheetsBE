@@ -29,3 +29,9 @@ export const changePasswordSchema = z
   });
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+export const updateLocaleSchema = z.object({
+  locale: z.enum(['es', 'en'], { message: 'El idioma debe ser es o en' }),
+});
+
+export type UpdateLocaleInput = z.infer<typeof updateLocaleSchema>;

@@ -15,11 +15,12 @@ export type UserCredentialsRecord = {
   last_login_at: string | null;
   is_active: boolean;
   must_change_password: boolean;
+  locale: 'es' | 'en';
   role: { id: number; code: string; name: string } | null;
 };
 
 const USER_COLUMNS =
-  'id, role_id, full_name, user_name, email, password_hash, job_title, failed_attempts, locked_until, last_login_at, is_active, must_change_password, role:ROLES!inner(id, code, name)';
+  'id, role_id, full_name, user_name, email, password_hash, job_title, failed_attempts, locked_until, last_login_at, is_active, must_change_password, locale, role:ROLES!inner(id, code, name)';
 
 function fail(operation: string, error: unknown): never {
   logger.error({ err: error, operation }, 'Fallo de acceso a datos en el modulo auth');
@@ -117,6 +118,12 @@ export async function updatePassword(id: number, passwordHash: string): Promise<
     .eq('id', id);
 
   if (error) fail('updatePassword', error);
+}
+
+export async function updateLocale(id: number, locale: 'es' | 'en'): Promise<void> {
+  const { error } = await supabase.from('USERS').update({ locale }).eq('id', id);
+
+  if (error) fail('updateLocale', error);
 }
 
 export async function findPermissionCodes(userId: number): Promise<string[]> {
