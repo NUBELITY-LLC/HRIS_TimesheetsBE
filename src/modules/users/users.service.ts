@@ -1,8 +1,10 @@
 import { logger } from '../../config/logger.js';
 import { RpcError } from '../../utils/rpc.js';
 import { ApiError } from '../../utils/ApiError.js';
-import { hashPassword } from '../../utils/password.js';
+import { parseDbTimestamp } from '../../utils/timestamps.js';
 import { PERMISSION_CODES } from '../../utils/permissions.js';
+import { sendInvitationEmail, sendPasswordResetEmail } from '../auth/auth.emails.js';
+import { issueToken, latestPendingToken } from '../auth/auth.tokens.js';
 import { ASSIGNABLE_ROLES, ROLE_ADMIN } from '../../utils/roles.js';
 import { queueNotificationEmails } from '../notifications/notifications.emails.js';
 import { ratePeriodOf, toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
@@ -47,12 +49,20 @@ export type UserView = {
   jobTitle: string | null;
   isActive: boolean;
   mustChangePassword: boolean;
+  invitationPending: boolean;
+  invitationExpiresAt: string | null;
   lastLoginAt: string | null;
   role: { id: number; code: string; name: string };
   permissions: string[];
 };
 
 export type Actor = { id: number; roleCode: string; permissions: string[] };
+
+export type AccountLinkResult = {
+  link: string;
+  expiresAt: string;
+  emailSent: boolean;
+};
 
 export type UserProjectView = {
   assignmentId: number;
@@ -97,10 +107,31 @@ function toUserView(record: UserRecord): UserView {
     jobTitle: record.job_title,
     isActive: record.is_active,
     mustChangePassword: record.must_change_password,
+    invitationPending: !record.has_password,
+    invitationExpiresAt: null,
     lastLoginAt: record.last_login_at,
     role: record.role,
     permissions: permissionCodesOf(record),
   };
+}
+
+function recipientOf(record: UserRecord) {
+  return {
+    id: record.id,
+    fullName: record.full_name,
+    userName: record.user_name,
+    email: record.email,
+    locale: record.locale,
+  };
+}
+
+async function inviteUser(record: UserRecord, actorId: number): Promise<AccountLinkResult> {
+  const issued = await issueToken(record.id, 'INVITE', actorId);
+  const emailSent = await sendInvitationEmail(recipientOf(record), issued.link, issued.expiresAt);
+
+  logger.info({ userId: record.id, issuedBy: actorId, emailSent }, 'Invitacion emitida');
+
+  return { link: issued.link, expiresAt: issued.expiresAt, emailSent };
 }
 
 function permissionCodesOf(record: UserRecord): string[] {
@@ -272,7 +303,10 @@ async function resolveAssignments(projects: UserProjectInput[]): Promise<NewUser
   return assignments;
 }
 
-export async function createUser(input: CreateUserInput, actor: Actor): Promise<UserView> {
+export async function createUser(
+  input: CreateUserInput,
+  actor: Actor,
+): Promise<{ user: UserView; invitation: AccountLinkResult | null }> {
   const role = await resolveRole(input.roleCode, actor);
 
   const permissions = permissionsFor(role.code, input.permissions, actor);
@@ -284,10 +318,10 @@ export async function createUser(input: CreateUserInput, actor: Actor): Promise<
       full_name: input.fullName,
       user_name: input.userName,
       email: input.email,
-      password_hash: await hashPassword(input.password),
+      password_hash: null,
       job_title: input.jobTitle ?? null,
       is_active: input.isActive ?? true,
-      must_change_password: true,
+      must_change_password: false,
     },
     permissions,
     actor.id,
@@ -307,7 +341,40 @@ export async function createUser(input: CreateUserInput, actor: Actor): Promise<
     'Usuario creado',
   );
 
-  return toUserView(created);
+  const invitation = created.is_active ? await inviteUser(created, actor.id) : null;
+
+  return { user: toUserView(created), invitation };
+}
+
+export async function sendInvitation(id: number, actor: Actor): Promise<AccountLinkResult> {
+  const target = await loadManageableUser(id, actor);
+
+  if (target.has_password) {
+    throw new ApiError(409, 'La cuenta ya fue activada', 'INVITATION_ALREADY_ACCEPTED');
+  }
+  if (!target.is_active) {
+    throw new ApiError(409, 'Reactiva la cuenta antes de invitarla', 'USER_INACTIVE');
+  }
+
+  return inviteUser(target, actor.id);
+}
+
+export async function sendPasswordReset(id: number, actor: Actor): Promise<AccountLinkResult> {
+  const target = await loadManageableUser(id, actor);
+
+  if (!target.has_password) {
+    throw new ApiError(409, 'La cuenta aun no acepta su invitacion', 'INVITATION_PENDING');
+  }
+  if (!target.is_active) {
+    throw new ApiError(409, 'Reactiva la cuenta antes de restablecer su contrasena', 'USER_INACTIVE');
+  }
+
+  const issued = await issueToken(target.id, 'RESET', actor.id);
+  const emailSent = await sendPasswordResetEmail(recipientOf(target), issued.link, issued.expiresAt);
+
+  logger.info({ userId: target.id, issuedBy: actor.id, emailSent }, 'Restablecimiento emitido por un administrador');
+
+  return { link: issued.link, expiresAt: issued.expiresAt, emailSent };
 }
 
 export async function listUsers(
@@ -359,6 +426,13 @@ export async function getUserById(id: number, actor: Actor): Promise<UserView> {
 
   if (!canSeeRole(actor.roleCode, view.role.code)) {
     throw ApiError.notFound('El usuario no existe');
+  }
+
+  if (view.invitationPending) {
+    const pending = await latestPendingToken(view.id, 'INVITE');
+    view.invitationExpiresAt = pending
+      ? parseDbTimestamp(pending.expiresAt).toISOString()
+      : null;
   }
 
   return view;
@@ -415,11 +489,6 @@ export async function updateUser(
   if (input.userName !== undefined) patch.user_name = input.userName;
   if (input.email !== undefined) patch.email = input.email;
   if (input.jobTitle !== undefined) patch.job_title = input.jobTitle;
-
-  if (input.password !== undefined) {
-    patch.password_hash = await hashPassword(input.password);
-    patch.must_change_password = !isSelf;
-  }
 
   if (Object.keys(patch).length) {
     const updated = await usersRepository.updateUser(id, patch);

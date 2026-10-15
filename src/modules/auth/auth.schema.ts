@@ -30,6 +30,26 @@ export const changePasswordSchema = z
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 
+export const accountTokenParamsSchema = z.object({
+  token: z.string().trim().min(1).max(100),
+});
+
+export const setPasswordSchema = z.object({
+  password: passwordSchema(),
+});
+
+export type SetPasswordInput = z.infer<typeof setPasswordSchema>;
+
+export const forgotPasswordSchema = z.object({
+  email: z
+    .string({ message: 'El correo es obligatorio' })
+    .trim()
+    .toLowerCase()
+    .pipe(z.email({ message: 'Escribe un correo valido' }).max(254)),
+});
+
+export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
+
 export const updateLocaleSchema = z.object({
   locale: z.enum(['es', 'en'], { message: 'El idioma debe ser es o en' }),
 });

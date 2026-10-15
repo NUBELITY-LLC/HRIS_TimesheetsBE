@@ -8,7 +8,7 @@ export type UserCredentialsRecord = {
   full_name: string;
   user_name: string;
   email: string;
-  password_hash: string;
+  password_hash: string | null;
   job_title: string | null;
   failed_attempts: number;
   locked_until: string | null;
@@ -114,10 +114,32 @@ export async function updatePassword(id: number, passwordHash: string): Promise<
       must_change_password: false,
       failed_attempts: 0,
       locked_until: null,
+      sessions_valid_after: new Date().toISOString(),
     })
     .eq('id', id);
 
   if (error) fail('updatePassword', error);
+}
+
+export async function findSessionState(
+  id: number,
+): Promise<{ is_active: boolean; sessions_valid_after: string | null } | null> {
+  const { data, error } = await supabase
+    .from('USERS')
+    .select('is_active, sessions_valid_after')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) fail('findSessionState', error);
+
+  return data ?? null;
+}
+
+export async function findByEmail(email: string): Promise<UserCredentialsRecord | null> {
+  const trimmed = email.trim();
+  if (!trimmed) return null;
+
+  return findByColumn('email', escapeLikePattern(trimmed));
 }
 
 export async function updateLocale(id: number, locale: 'es' | 'en'): Promise<void> {

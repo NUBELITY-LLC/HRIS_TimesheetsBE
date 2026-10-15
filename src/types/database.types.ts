@@ -15,7 +15,7 @@ type UsersRow = {
   full_name: string;
   user_name: string;
   email: string;
-  password_hash: string;
+  password_hash: string | null;
   job_title: string | null;
   failed_attempts: number;
   locked_until: string | null;
@@ -23,6 +23,19 @@ type UsersRow = {
   is_active: boolean;
   must_change_password: boolean;
   locale: 'es' | 'en';
+  has_password: boolean;
+  sessions_valid_after: string | null;
+};
+
+type UserTokensRow = {
+  id: number;
+  user_id: number;
+  purpose: 'INVITE' | 'RESET';
+  token_hash: string;
+  expires_at: string;
+  used_at: string | null;
+  created_by: number | null;
+  created_at: string;
 };
 
 type UserPermissionsRow = {
@@ -297,11 +310,20 @@ export type Database = {
           | 'locked_until'
           | 'last_login_at'
           | 'is_active'
+          | 'password_hash'
           | 'must_change_password'
           | 'locale'
+          | 'has_password'
+          | 'sessions_valid_after'
         >;
-        Update: Partial<UsersRow>;
+        Update: Partial<Omit<UsersRow, 'has_password'>>;
         Relationships: [ForeignKey<'role_id', 'ROLES'>];
+      };
+      USER_TOKENS: {
+        Row: UserTokensRow;
+        Insert: InsertOf<UserTokensRow, 'used_at' | 'created_by' | 'created_at'>;
+        Update: Partial<UserTokensRow>;
+        Relationships: [ForeignKey<'user_id', 'USERS'>, ForeignKey<'created_by', 'USERS'>];
       };
       USER_PERMISSIONS: {
         Row: UserPermissionsRow;

@@ -10,7 +10,7 @@ create table if not exists public."USERS" (
   full_name            varchar(150) not null,
   user_name            varchar(50)  not null,
   email                varchar(254) not null,
-  password_hash        varchar(255) not null,
+  password_hash        varchar(255),
   job_title            varchar(100),
   failed_attempts      smallint     not null default 0,
   locked_until         timestamp,
@@ -24,6 +24,29 @@ create table if not exists public."USERS" (
 alter table public."USERS"
   add column if not exists locale varchar(2) not null default 'es'
   constraint "chk_USERS_locale" check (locale in ('es', 'en'));
+
+alter table public."USERS" alter column password_hash drop not null;
+
+alter table public."USERS"
+  add column if not exists has_password boolean
+  generated always as (password_hash is not null) stored;
+
+alter table public."USERS" add column if not exists sessions_valid_after timestamp;
+
+create table if not exists public."USER_TOKENS" (
+  id         bigint      generated always as identity primary key,
+  user_id    bigint      not null references public."USERS"(id) on delete cascade,
+  purpose    varchar(10) not null,
+  token_hash char(64)    not null unique,
+  expires_at timestamp   not null,
+  used_at    timestamp,
+  created_by bigint      references public."USERS"(id) on delete set null,
+  created_at timestamp   not null default now(),
+  constraint "chk_USER_TOKENS_purpose" check (purpose in ('INVITE', 'RESET'))
+);
+
+create index if not exists "idx_USER_TOKENS_user_id_purpose"
+  on public."USER_TOKENS" (user_id, purpose);
 
 create index if not exists "idx_USERS_role_id" on public."USERS" (role_id);
 create index if not exists "idx_USERS_is_active" on public."USERS" (is_active);
@@ -762,7 +785,7 @@ begin
         'timesheetId', claimed.timesheet_id,
         'recipientEmail', u.email,
         'recipientName', u.full_name,
-        'recipientActive', u.is_active,
+        'recipientActive', u.is_active and u.has_password,
         'recipientLocale', u.locale,
         'submissionCode', t.submission_code,
         'weekStart', coalesce(t.week_start_date, reminder.week_start),
@@ -2141,6 +2164,7 @@ $$;
 
 alter table public."ROLES"                  enable row level security;
 alter table public."USERS"                  enable row level security;
+alter table public."USER_TOKENS"            enable row level security;
 alter table public."COMPANIES"              enable row level security;
 alter table public."CLIENTS"                enable row level security;
 alter table public."PROJECTS"               enable row level security;
