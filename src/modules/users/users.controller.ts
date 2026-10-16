@@ -25,8 +25,18 @@ function requireActor(req: Request): usersService.Actor {
 }
 
 export async function create(req: Request, res: Response): Promise<void> {
-  const user = await usersService.createUser(req.body as CreateUserInput, requireActor(req));
-  created(res, { user });
+  const result = await usersService.createUser(req.body as CreateUserInput, requireActor(req));
+  created(res, result);
+}
+
+export async function sendInvitation(req: Request, res: Response): Promise<void> {
+  const invitation = await usersService.sendInvitation(Number(req.params.id), requireActor(req));
+  ok(res, { invitation });
+}
+
+export async function sendPasswordReset(req: Request, res: Response): Promise<void> {
+  const reset = await usersService.sendPasswordReset(Number(req.params.id), requireActor(req));
+  ok(res, { reset });
 }
 
 export async function list(req: Request, res: Response): Promise<void> {

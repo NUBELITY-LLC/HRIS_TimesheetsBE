@@ -10,7 +10,7 @@ create table if not exists public."USERS" (
   full_name            varchar(150) not null,
   user_name            varchar(50)  not null,
   email                varchar(254) not null,
-  password_hash        varchar(255) not null,
+  password_hash        varchar(255),
   job_title            varchar(100),
   failed_attempts      smallint     not null default 0,
   locked_until         timestamp,
@@ -20,6 +20,33 @@ create table if not exists public."USERS" (
   constraint "chk_USERS_user_name_lower" check (user_name = lower(user_name)),
   constraint "chk_USERS_email_lower"     check (email = lower(email))
 );
+
+alter table public."USERS"
+  add column if not exists locale varchar(2) not null default 'es'
+  constraint "chk_USERS_locale" check (locale in ('es', 'en'));
+
+alter table public."USERS" alter column password_hash drop not null;
+
+alter table public."USERS"
+  add column if not exists has_password boolean
+  generated always as (password_hash is not null) stored;
+
+alter table public."USERS" add column if not exists sessions_valid_after timestamp;
+
+create table if not exists public."USER_TOKENS" (
+  id         bigint      generated always as identity primary key,
+  user_id    bigint      not null references public."USERS"(id) on delete cascade,
+  purpose    varchar(10) not null,
+  token_hash char(64)    not null unique,
+  expires_at timestamp   not null,
+  used_at    timestamp,
+  created_by bigint      references public."USERS"(id) on delete set null,
+  created_at timestamp   not null default now(),
+  constraint "chk_USER_TOKENS_purpose" check (purpose in ('INVITE', 'RESET'))
+);
+
+create index if not exists "idx_USER_TOKENS_user_id_purpose"
+  on public."USER_TOKENS" (user_id, purpose);
 
 create index if not exists "idx_USERS_role_id" on public."USERS" (role_id);
 create index if not exists "idx_USERS_is_active" on public."USERS" (is_active);
@@ -746,7 +773,7 @@ begin
            email_attempts   = n.email_attempts + 1
       from candidates
      where n.id = candidates.id
-    returning n.id, n.user_id, n.timesheet_id, n.kind, n.title, n.body
+    returning n.id, n.user_id, n.timesheet_id, n.kind, n.title, n.body, n.dedupe_key, n.created_at
   )
   select coalesce(
     jsonb_agg(
@@ -758,14 +785,19 @@ begin
         'timesheetId', claimed.timesheet_id,
         'recipientEmail', u.email,
         'recipientName', u.full_name,
-        'recipientActive', u.is_active,
+        'recipientActive', u.is_active and u.has_password,
+        'recipientLocale', u.locale,
         'submissionCode', t.submission_code,
-        'weekStart', t.week_start_date,
-        'weekEnd', t.week_end_date,
+        'weekStart', coalesce(t.week_start_date, reminder.week_start),
+        'weekEnd', coalesce(t.week_end_date, reminder.week_start + 6),
         'totalHours', t.total_hours,
         'consultantName', consultant.full_name,
-        'projectName', p.project_name,
-        'clientName', c.client_name
+        'projectName', coalesce(p.project_name, assigned.project_name),
+        'clientName', coalesce(c.client_name, assigned.client_name),
+        'companyName', coalesce(co.trade_name, assigned.company_name),
+        'startDate', assigned.start_date,
+        'projectNames', reminder.project_names,
+        'comments', rejection.comments
       )
       order by claimed.id
     ),
@@ -778,7 +810,45 @@ begin
     left join public."PROJECT_ASSIGNMENTS" a  on a.id = t.assignment_id
     left join public."USERS" consultant       on consultant.id = a.consultant_id
     left join public."PROJECTS" p             on p.id = a.project_id
-    left join public."CLIENTS" c              on c.id = p.client_id;
+    left join public."CLIENTS" c              on c.id = p.client_id
+    left join public."COMPANIES" co           on co.id = c.company_id
+    left join lateral (
+      select ap.project_name, ac.client_name, aco.trade_name as company_name, aa.start_date
+        from public."PROJECT_ASSIGNMENTS" aa
+        join public."PROJECTS" ap   on ap.id = aa.project_id
+        join public."CLIENTS" ac    on ac.id = ap.client_id
+        join public."COMPANIES" aco on aco.id = ac.company_id
+       where split_part(claimed.dedupe_key, ':', 1) = 'assignment'
+         and aa.id::text = split_part(claimed.dedupe_key, ':', 2)
+    ) assigned on true
+    left join lateral (
+      select week.start as week_start,
+             (select jsonb_agg(distinct rp.project_name order by rp.project_name)
+                from public."PROJECT_ASSIGNMENTS" ra
+                join public."PROJECTS" rp on rp.id = ra.project_id and rp.status = 'ACTIVE'
+                left join public."TIMESHEETS" rt
+                  on rt.assignment_id = ra.id and rt.week_start_date = week.start
+               where ra.consultant_id = claimed.user_id
+                 and ra.is_active
+                 and ra.start_date <= week.start + 6
+                 and (ra.end_date is null or ra.end_date >= week.start)
+                 and (rt.id is null or rt.status in ('DRAFT', 'REJECTED'))) as project_names
+        from (
+          select case when split_part(claimed.dedupe_key, ':', 1) = 'week'
+                      then split_part(claimed.dedupe_key, ':', 2)::date end as start
+        ) week
+       where week.start is not null
+    ) reminder on true
+    left join lateral (
+      select e.comments
+        from public."TIMESHEET_EVENTS" e
+       where claimed.kind = 'REJECTED'
+         and e.timesheet_id = claimed.timesheet_id
+         and e.event_type = 'REJECTED_CONSULTANT'
+         and e.occurred_at <= claimed.created_at
+       order by e.occurred_at desc, e.id desc
+       limit 1
+    ) rejection on true;
 
   return v_claimed;
 end;
@@ -2094,6 +2164,7 @@ $$;
 
 alter table public."ROLES"                  enable row level security;
 alter table public."USERS"                  enable row level security;
+alter table public."USER_TOKENS"            enable row level security;
 alter table public."COMPANIES"              enable row level security;
 alter table public."CLIENTS"                enable row level security;
 alter table public."PROJECTS"               enable row level security;

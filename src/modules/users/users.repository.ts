@@ -13,6 +13,8 @@ export type UserRecord = {
   job_title: string | null;
   is_active: boolean;
   must_change_password: boolean;
+  has_password: boolean;
+  locale: 'es' | 'en';
   last_login_at: string | null;
   role: RoleRecord | null;
   permissions: { permission_code: string }[] | null;
@@ -23,7 +25,7 @@ export type NewUserRow = {
   full_name: string;
   user_name: string;
   email: string;
-  password_hash: string;
+  password_hash: string | null;
   job_title: string | null;
   is_active: boolean;
   must_change_password: boolean;
@@ -45,10 +47,8 @@ export type UserPatch = {
   full_name?: string;
   user_name?: string;
   email?: string;
-  password_hash?: string;
   job_title?: string | null;
   is_active?: boolean;
-  must_change_password?: boolean;
 };
 
 export type SortColumn = 'id' | 'full_name' | 'user_name' | 'email' | 'last_login_at';
@@ -66,7 +66,7 @@ export type ListUsersFilters = {
 };
 
 const USER_COLUMNS =
-  'id, full_name, user_name, email, job_title, is_active, must_change_password, last_login_at, ' +
+  'id, full_name, user_name, email, job_title, is_active, must_change_password, has_password, locale, last_login_at, ' +
   'role:ROLES!inner(id, code, name), permissions:USER_PERMISSIONS(permission_code)';
 
 const UNIQUE_VIOLATION = '23505';

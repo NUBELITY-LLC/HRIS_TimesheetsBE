@@ -1,9 +1,10 @@
 import { waitUntil } from '@vercel/functions';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
-import { mailChannel, type MailMessage } from './notifications.mailer.js';
+import { sendMail, type MailMessage } from './notifications.mailer.js';
 import * as repository from './notifications.repository.js';
 import type { ClaimedNotificationEmail, EmailOutcome } from './notifications.repository.js';
+import { notificationCopy, toEmailLocale } from './notifications.copy.js';
 import { renderEmail } from './notifications.templates.js';
 
 export type OutboxFilter = { timesheetId?: number; userId?: number };
@@ -14,57 +15,21 @@ const BATCH_SIZE = 10;
 const SEND_CONCURRENCY = 3;
 const INLINE_BUDGET_MS = 8_000;
 
-function displayDate(isoDate: string | null): string | null {
-  if (!isoDate) return null;
-  const [year, month, day] = isoDate.slice(0, 10).split('-');
-  return `${day}/${month}/${year}`;
-}
-
-function actionFor(email: ClaimedNotificationEmail): { label: string; url: string } {
-  const base = env.appBaseUrl;
-
-  switch (email.kind) {
-    case 'REVIEW_REQUESTED':
-      return { label: 'Revisar timesheet', url: `${base}/reviews` };
-    case 'APPROVED':
-    case 'REJECTED':
-    case 'CLOSED':
-      return email.timesheetId
-        ? { label: 'Ver timesheet', url: `${base}/history/${email.timesheetId}` }
-        : { label: 'Ver mis timesheets', url: `${base}/history` };
-    case 'REMINDER':
-    case 'TASK_ASSIGNED':
-      return { label: 'Capturar horas', url: `${base}/timesheets` };
-    default:
-      return { label: 'Ver notificaciones', url: `${base}/notifications` };
-  }
-}
-
-function notificationMessage(email: ClaimedNotificationEmail): MailMessage {
-  const week =
-    email.weekStart && email.weekEnd
-      ? `${displayDate(email.weekStart)} al ${displayDate(email.weekEnd)}`
-      : null;
+export function notificationMessage(email: ClaimedNotificationEmail): MailMessage {
+  const locale = toEmailLocale(email.recipientLocale);
+  const { subject, action, ...copy } = notificationCopy(email, locale);
 
   const rendered = renderEmail({
+    ...copy,
+    locale,
     recipientName: email.recipientName,
-    heading: email.title,
-    paragraphs: email.body ? [email.body] : [],
-    details: [
-      ['Folio', email.submissionCode],
-      ['Consultor', email.kind === 'REVIEW_REQUESTED' ? email.consultantName : null],
-      ['Proyecto', email.projectName],
-      ['Cliente', email.clientName],
-      ['Semana', week],
-      ['Horas', email.totalHours === null ? null : String(Number(email.totalHours))],
-    ],
-    action: actionFor(email),
+    action: { label: action.label, url: `${env.appBaseUrl}${action.path}` },
   });
 
   return {
     to: email.recipientEmail,
     toName: email.recipientName,
-    subject: email.title,
+    subject,
     ...rendered,
   };
 }
@@ -76,11 +41,11 @@ async function deliver(email: ClaimedNotificationEmail): Promise<EmailOutcome['s
     outcome = { status: 'SKIPPED' };
   } else {
     try {
-      await mailChannel.send(notificationMessage(email));
+      await sendMail(notificationMessage(email));
       outcome = { status: 'SENT' };
     } catch (error) {
       logger.error(
-        { err: error, channel: mailChannel.name, notificationId: email.id, kind: email.kind },
+        { err: error, notificationId: email.id, kind: email.kind },
         'No fue posible enviar el correo de la notificacion',
       );
       outcome = {
@@ -126,11 +91,6 @@ export async function dispatchNotificationEmails(
 ): Promise<OutboxResult> {
   const result: OutboxResult = { sent: 0, failed: 0, skipped: 0 };
 
-  if (env.MAIL_DRIVER === 'none') {
-    result.skipped = await repository.skipPendingEmails(filter);
-    return result;
-  }
-
   const deadline = Date.now() + budgetMs;
 
   while (Date.now() < deadline) {
@@ -140,7 +100,7 @@ export async function dispatchNotificationEmails(
   }
 
   if (result.sent || result.failed || result.skipped) {
-    logger.info({ ...filter, ...result, channel: mailChannel.name }, 'Correos de notificacion procesados');
+    logger.info({ ...filter, ...result }, 'Correos de notificacion procesados');
   }
 
   return result;

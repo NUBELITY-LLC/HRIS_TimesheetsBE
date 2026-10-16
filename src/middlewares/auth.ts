@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
-import { findPermissionCodes } from '../modules/auth/auth.repository.js';
+import { findPermissionCodes, findSessionState } from '../modules/auth/auth.repository.js';
 import { ApiError } from '../utils/ApiError.js';
+import { parseDbTimestamp } from '../utils/timestamps.js';
 import type { PermissionCode } from '../utils/permissions.js';
 import { verifyAccessToken } from '../utils/jwt.js';
 
@@ -28,6 +29,21 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
     if (!Number.isInteger(id) || id <= 0) {
       next(ApiError.unauthorized('Token invalido'));
       return;
+    }
+
+    const session = await findSessionState(id);
+
+    if (!session?.is_active) {
+      next(new ApiError(401, 'La sesion ya no es valida, vuelve a iniciar sesion', 'SESSION_REVOKED'));
+      return;
+    }
+
+    if (session.sessions_valid_after) {
+      const validAfter = Math.floor(parseDbTimestamp(session.sessions_valid_after).getTime() / 1000);
+      if (payload.issuedAt < validAfter) {
+        next(new ApiError(401, 'La sesion ya no es valida, vuelve a iniciar sesion', 'SESSION_REVOKED'));
+        return;
+      }
     }
 
     req.user = {

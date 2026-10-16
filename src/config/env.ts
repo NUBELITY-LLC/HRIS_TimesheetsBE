@@ -30,49 +30,22 @@ const envSchema = z.object({
   LOGIN_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().int().min(1).default(15),
   LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(20),
 
-  MAIL_DRIVER: z.enum(['log', 'none', 'smtp', 'graph']).default('log'),
-  MAIL_FROM_ADDRESS: z.email().optional(),
+  MAIL_FROM_ADDRESS: z.email(),
   MAIL_FROM_NAME: z.string().min(1).default('Nubelity HRIS'),
   MAIL_REPLY_TO: z.email().optional(),
   MAIL_TIMEOUT_MS: z.coerce.number().int().min(1000).max(14000).default(8000),
+  MAIL_EXTERNAL_ENABLED: booleanish.default(false),
 
-  SMTP_HOST: z.string().min(1).default('smtp.office365.com'),
-  SMTP_PORT: z.coerce.number().int().positive().default(587),
-  SMTP_SECURE: booleanish.default(false),
-  SMTP_USER: z.string().min(1).optional(),
-  SMTP_PASSWORD: z.string().min(1).optional(),
+  GRAPH_TENANT_ID: z.string().min(1),
+  GRAPH_CLIENT_ID: z.string().min(1),
+  GRAPH_CLIENT_SECRET: z.string().min(1),
 
-  GRAPH_TENANT_ID: z.string().min(1).optional(),
-  GRAPH_CLIENT_ID: z.string().min(1).optional(),
-  GRAPH_CLIENT_SECRET: z.string().min(1).optional(),
-
-  APP_BASE_URL: z.url().optional(),
+  APP_BASE_URL: z.url(),
   APPROVAL_LINK_BASE_URL: z.url().default('http://localhost:5173/aprobaciones'),
 
   CRON_SECRET: z.string().min(16, 'CRON_SECRET debe tener al menos 16 caracteres').optional(),
 
   PRETTY_LOGS: booleanish.optional(),
-}).superRefine((value, ctx) => {
-  const required: Record<string, readonly (keyof typeof value)[]> = {
-    smtp: ['MAIL_FROM_ADDRESS', 'APP_BASE_URL', 'SMTP_USER', 'SMTP_PASSWORD'],
-    graph: [
-      'MAIL_FROM_ADDRESS',
-      'APP_BASE_URL',
-      'GRAPH_TENANT_ID',
-      'GRAPH_CLIENT_ID',
-      'GRAPH_CLIENT_SECRET',
-    ],
-  };
-
-  for (const key of required[value.MAIL_DRIVER] ?? []) {
-    if (value[key] === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: [key],
-        message: `Es obligatoria con MAIL_DRIVER=${value.MAIL_DRIVER}`,
-      });
-    }
-  }
 });
 
 const definedEnv = Object.fromEntries(
@@ -100,7 +73,7 @@ export const env = {
   isDevelopment: raw.NODE_ENV === 'development',
   isTest: raw.NODE_ENV === 'test',
   approvalLinkBaseUrl: raw.APPROVAL_LINK_BASE_URL.replace(/\/+$/, ''),
-  appBaseUrl: (raw.APP_BASE_URL ?? 'http://localhost:3001').replace(/\/+$/, ''),
+  appBaseUrl: raw.APP_BASE_URL.replace(/\/+$/, ''),
   corsOrigins:
     raw.CORS_ORIGINS.trim() === '*'
       ? ('*' as const)

@@ -46,7 +46,9 @@ export async function signAccessToken(payload: AccessTokenPayload): Promise<Issu
   };
 }
 
-export async function verifyAccessToken(token: string): Promise<AccessTokenPayload> {
+export type VerifiedAccessToken = AccessTokenPayload & { issuedAt: number };
+
+export async function verifyAccessToken(token: string): Promise<VerifiedAccessToken> {
   try {
     const { payload } = await jwtVerify(token, secret, {
       algorithms: [ALGORITHM],
@@ -60,7 +62,8 @@ export async function verifyAccessToken(token: string): Promise<AccessTokenPaylo
       typeof payload.email !== 'string' ||
       typeof payload.roleId !== 'number' ||
       typeof payload.roleCode !== 'string' ||
-      typeof payload.mustChangePassword !== 'boolean'
+      typeof payload.mustChangePassword !== 'boolean' ||
+      typeof payload.iat !== 'number'
     ) {
       throw ApiError.unauthorized('El token no contiene los claims esperados');
     }
@@ -72,6 +75,7 @@ export async function verifyAccessToken(token: string): Promise<AccessTokenPaylo
       roleId: payload.roleId,
       roleCode: payload.roleCode,
       mustChangePassword: payload.mustChangePassword,
+      issuedAt: payload.iat,
     };
   } catch (error) {
     if (error instanceof ApiError) throw error;

@@ -67,6 +67,24 @@ usersRouter.patch(
   asyncHandler(usersController.update),
 );
 
+usersRouter.post(
+  '/:id/invitation',
+  requireAuth,
+  requirePasswordChanged,
+  requirePermission(PERMISSION_USERS_MANAGE),
+  validate({ params: userIdParamSchema }),
+  asyncHandler(usersController.sendInvitation),
+);
+
+usersRouter.post(
+  '/:id/password-reset',
+  requireAuth,
+  requirePasswordChanged,
+  requirePermission(PERMISSION_USERS_MANAGE),
+  validate({ params: userIdParamSchema }),
+  asyncHandler(usersController.sendPasswordReset),
+);
+
 usersRouter.get(
   '/:id/projects',
   requireAuth,

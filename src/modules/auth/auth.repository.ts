@@ -8,18 +8,19 @@ export type UserCredentialsRecord = {
   full_name: string;
   user_name: string;
   email: string;
-  password_hash: string;
+  password_hash: string | null;
   job_title: string | null;
   failed_attempts: number;
   locked_until: string | null;
   last_login_at: string | null;
   is_active: boolean;
   must_change_password: boolean;
+  locale: 'es' | 'en';
   role: { id: number; code: string; name: string } | null;
 };
 
 const USER_COLUMNS =
-  'id, role_id, full_name, user_name, email, password_hash, job_title, failed_attempts, locked_until, last_login_at, is_active, must_change_password, role:ROLES!inner(id, code, name)';
+  'id, role_id, full_name, user_name, email, password_hash, job_title, failed_attempts, locked_until, last_login_at, is_active, must_change_password, locale, role:ROLES!inner(id, code, name)';
 
 function fail(operation: string, error: unknown): never {
   logger.error({ err: error, operation }, 'Fallo de acceso a datos en el modulo auth');
@@ -113,10 +114,38 @@ export async function updatePassword(id: number, passwordHash: string): Promise<
       must_change_password: false,
       failed_attempts: 0,
       locked_until: null,
+      sessions_valid_after: new Date().toISOString(),
     })
     .eq('id', id);
 
   if (error) fail('updatePassword', error);
+}
+
+export async function findSessionState(
+  id: number,
+): Promise<{ is_active: boolean; sessions_valid_after: string | null } | null> {
+  const { data, error } = await supabase
+    .from('USERS')
+    .select('is_active, sessions_valid_after')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (error) fail('findSessionState', error);
+
+  return data ?? null;
+}
+
+export async function findByEmail(email: string): Promise<UserCredentialsRecord | null> {
+  const trimmed = email.trim();
+  if (!trimmed) return null;
+
+  return findByColumn('email', escapeLikePattern(trimmed));
+}
+
+export async function updateLocale(id: number, locale: 'es' | 'en'): Promise<void> {
+  const { error } = await supabase.from('USERS').update({ locale }).eq('id', id);
+
+  if (error) fail('updateLocale', error);
 }
 
 export async function findPermissionCodes(userId: number): Promise<string[]> {

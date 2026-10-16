@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { passwordSchema } from '../../utils/password.js';
 import { PERMISSION_CODES } from '../../utils/permissions.js';
 import { ASSIGNABLE_ROLES, ROLE_CONSULTANT } from '../../utils/roles.js';
 import { contractType, currency, ratePeriod } from '../projects/projects.schema.js';
@@ -22,8 +21,6 @@ const email = z
   .email({ message: 'El correo no es valido' })
   .max(254, 'El correo excede los 254 caracteres')
   .transform((value) => value.trim().toLowerCase());
-
-const password = passwordSchema();
 
 const roleCode = z
   .string({ message: 'El rol es obligatorio' })
@@ -103,7 +100,6 @@ export const createUserSchema = z
     fullName,
     userName,
     email,
-    password,
     roleCode,
     permissions: permissions.optional(),
     jobTitle: jobTitle.optional(),
@@ -151,7 +147,6 @@ export const updateUserSchema = z
     fullName: fullName.optional(),
     userName: userName.optional(),
     email: email.optional(),
-    password: password.optional(),
     roleCode: roleCode.optional(),
     permissions: permissions.optional(),
     jobTitle: jobTitle.nullable().optional(),

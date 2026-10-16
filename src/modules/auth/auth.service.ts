@@ -1,3 +1,4 @@
+import { waitUntil } from '@vercel/functions';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
@@ -7,7 +8,25 @@ import { parseDbTimestamp } from '../../utils/timestamps.js';
 import { PERMISSION_CODES } from '../../utils/permissions.js';
 import * as authRepository from './auth.repository.js';
 import type { UserCredentialsRecord } from './auth.repository.js';
-import type { ChangePasswordInput, LoginInput } from './auth.schema.js';
+import {
+  sendPasswordChangedEmail,
+  sendPasswordResetEmail,
+  type AccountRecipient,
+} from './auth.emails.js';
+import type {
+  ChangePasswordInput,
+  ForgotPasswordInput,
+  LoginInput,
+  SetPasswordInput,
+  UpdateLocaleInput,
+} from './auth.schema.js';
+import {
+  consumeToken,
+  findUsableToken,
+  issueToken,
+  latestPendingToken,
+  type TokenPurpose,
+} from './auth.tokens.js';
 
 export type AuthenticatedUser = {
   id: number;
@@ -17,6 +36,7 @@ export type AuthenticatedUser = {
   jobTitle: string | null;
   lastLoginAt: string | null;
   mustChangePassword: boolean;
+  locale: 'es' | 'en';
   role: { id: number; code: string; name: string };
   permissions: string[];
 };
@@ -69,6 +89,7 @@ async function toAuthenticatedUser(record: UserCredentialsRecord): Promise<Authe
     jobTitle: record.job_title,
     lastLoginAt: record.last_login_at,
     mustChangePassword: record.must_change_password,
+    locale: record.locale,
     role: record.role,
     permissions: await permissionsOf(record.id),
   };
@@ -136,7 +157,7 @@ async function registerFailedAttempt(record: UserCredentialsRecord): Promise<nev
 export async function login(input: LoginInput): Promise<LoginResult> {
   const record = await authRepository.findByUsernameOrEmail(input.username);
 
-  if (!record) {
+  if (!record?.password_hash) {
     await fakeVerifyPassword(input.password);
     throw invalidCredentialsError();
   }
@@ -175,13 +196,21 @@ export async function getProfile(userId: number): Promise<AuthenticatedUser> {
   return await toAuthenticatedUser(record);
 }
 
+export async function updateLocale(
+  userId: number,
+  input: UpdateLocaleInput,
+): Promise<{ locale: UpdateLocaleInput['locale'] }> {
+  await authRepository.updateLocale(userId, input.locale);
+  return { locale: input.locale };
+}
+
 export async function changePassword(
   userId: number,
   input: ChangePasswordInput,
 ): Promise<LoginResult> {
   const record = await authRepository.findById(userId);
 
-  if (!record) {
+  if (!record?.password_hash) {
     throw ApiError.unauthorized('La cuenta asociada al token ya no existe');
   }
   assertActiveAccount(record.is_active);
@@ -218,5 +247,120 @@ export async function changePassword(
     'Contrasena actualizada por el propio usuario',
   );
 
+  waitUntil(sendPasswordChangedEmail(recipientOf(record)));
+
   return issueSession({ ...(await toAuthenticatedUser(record)), mustChangePassword: false });
+}
+
+export type AccountLinkView = {
+  purpose: 'INVITE' | 'RESET';
+  fullName: string;
+  userName: string;
+  email: string;
+  expiresAt: string;
+};
+
+type UsableLink = { tokenId: number; record: UserCredentialsRecord; expiresAt: string };
+
+const RESET_REQUEST_COOLDOWN_MS = 2 * 60 * 1000;
+
+function recipientOf(record: UserCredentialsRecord): AccountRecipient {
+  return {
+    id: record.id,
+    fullName: record.full_name,
+    userName: record.user_name,
+    email: record.email,
+    locale: record.locale,
+  };
+}
+
+function invalidLinkError(purpose: TokenPurpose): ApiError {
+  return purpose === 'INVITE'
+    ? new ApiError(404, 'La invitacion no es valida o ya vencio', 'INVITATION_INVALID')
+    : new ApiError(404, 'El enlace no es valido o ya vencio', 'RESET_LINK_INVALID');
+}
+
+function isEligible(record: UserCredentialsRecord, purpose: TokenPurpose): boolean {
+  if (!record.is_active) return false;
+  return purpose === 'INVITE' ? !record.password_hash : Boolean(record.password_hash);
+}
+
+async function resolveLink(token: string, purpose: TokenPurpose): Promise<UsableLink> {
+  const found = await findUsableToken(token, purpose);
+  if (!found) throw invalidLinkError(purpose);
+
+  const record = await authRepository.findById(found.userId);
+  if (!record || !isEligible(record, purpose)) throw invalidLinkError(purpose);
+
+  return { tokenId: found.id, record, expiresAt: found.expiresAt };
+}
+
+export async function describeAccountLink(
+  token: string,
+  purpose: TokenPurpose,
+): Promise<AccountLinkView> {
+  const { record, expiresAt } = await resolveLink(token, purpose);
+
+  return {
+    purpose,
+    fullName: record.full_name,
+    userName: record.user_name,
+    email: record.email,
+    expiresAt: parseDbTimestamp(expiresAt).toISOString(),
+  };
+}
+
+export async function completeAccountLink(
+  token: string,
+  purpose: TokenPurpose,
+  input: SetPasswordInput,
+): Promise<LoginResult> {
+  const { tokenId, record } = await resolveLink(token, purpose);
+
+  if (!(await consumeToken(tokenId))) throw invalidLinkError(purpose);
+
+  await authRepository.updatePassword(record.id, await hashPassword(input.password));
+  await authRepository.registerSuccessfulLogin(record.id);
+
+  logger.info(
+    { userId: record.id, purpose },
+    purpose === 'INVITE' ? 'Invitacion aceptada' : 'Contrasena restablecida por enlace',
+  );
+
+  if (purpose === 'RESET') {
+    waitUntil(sendPasswordChangedEmail(recipientOf(record)));
+  }
+
+  return issueSession({ ...(await toAuthenticatedUser(record)), mustChangePassword: false });
+}
+
+async function processResetRequest(email: string): Promise<void> {
+  const record = await authRepository.findByEmail(email);
+
+  if (!record || !isEligible(record, 'RESET')) {
+    logger.info('Solicitud de restablecimiento sin cuenta elegible');
+    return;
+  }
+
+  const pending = await latestPendingToken(record.id, 'RESET');
+  if (
+    pending &&
+    Date.now() - parseDbTimestamp(pending.createdAt).getTime() < RESET_REQUEST_COOLDOWN_MS
+  ) {
+    logger.info({ userId: record.id }, 'Solicitud de restablecimiento repetida, se omite');
+    return;
+  }
+
+  const issued = await issueToken(record.id, 'RESET', null);
+  const sent = await sendPasswordResetEmail(recipientOf(record), issued.link, issued.expiresAt);
+
+  logger.info({ userId: record.id, emailSent: sent }, 'Enlace de restablecimiento solicitado');
+}
+
+export function requestPasswordReset(input: ForgotPasswordInput): void {
+  waitUntil(
+    processResetRequest(input.email).catch((error: unknown) => {
+      logger.error({ err: error }, 'Fallo la solicitud de restablecimiento');
+    }),
+  );
 }
