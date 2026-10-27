@@ -865,10 +865,14 @@ declare
   v_role_id bigint;
   v_count   integer;
   v_total   integer := 0;
+  v_before  jsonb;
+  v_after   jsonb;
 begin
   if not exists (select 1 from public."PROJECTS" where id = p_project_id) then
     raise exception 'PROJECT_NOT_FOUND';
   end if;
+
+  v_before := public.fn_opt_log_approval_flow(p_project_id);
 
   v_count := jsonb_array_length(coalesce(p_steps, '[]'::jsonb));
 
@@ -913,6 +917,20 @@ begin
 
     v_total := v_total + 1;
   end loop;
+
+  v_after := public.fn_opt_log_approval_flow(p_project_id);
+
+  if v_before is distinct from v_after then
+    perform public.fn_opt_log_write(jsonb_build_object(
+      'category', 'CATALOG',
+      'action', 'APPROVAL_FLOW_UPDATED',
+      'entityType', 'PROJECT',
+      'entityId', p_project_id,
+      'entityLabel', (select project_name from public."PROJECTS" where id = p_project_id),
+      'projectId', p_project_id,
+      'changes', jsonb_build_object('approval_flow', jsonb_build_object('from', v_before, 'to', v_after))
+    ));
+  end if;
 
   return v_total;
 end;
@@ -2162,6 +2180,678 @@ begin
 end;
 $$;
 
+create table if not exists public."OPT_LOG" (
+  id              bigint       generated always as identity primary key,
+  occurred_at     timestamp    not null default clock_timestamp(),
+  category        varchar(20)  not null,
+  action          varchar(40)  not null,
+  entity_type     varchar(30)  not null,
+  entity_id       bigint,
+  entity_label    varchar(300),
+  timesheet_id    bigint,
+  timesheet_code  varchar(30),
+  project_id      bigint,
+  project_name    varchar(150),
+  subject_user_id bigint,
+  subject_name    varchar(150),
+  actor_id        bigint,
+  actor_name      varchar(150),
+  actor_email     varchar(254),
+  actor_role_code varchar(30),
+  source          varchar(10)  not null default 'SYSTEM',
+  from_status     varchar(30),
+  to_status       varchar(30),
+  comments        text,
+  changes         jsonb        not null default '{}',
+  metadata        jsonb        not null default '{}',
+  request_id      varchar(128),
+  ip_address      varchar(64),
+  user_agent      varchar(400),
+  constraint "chk_OPT_LOG_category" check (
+    category in ('WORKFLOW', 'NOTIFICATION', 'EVIDENCE', 'CATALOG', 'ASSIGNMENT', 'USERS', 'ACCESS', 'PAYROLL')
+  ),
+  constraint "chk_OPT_LOG_source" check (source in ('USER', 'SYSTEM', 'EXTERNAL'))
+);
+
+create index if not exists "idx_OPT_LOG_occurred_at" on public."OPT_LOG" (occurred_at desc, id desc);
+create index if not exists "idx_OPT_LOG_timesheet_id_occurred_at"
+  on public."OPT_LOG" (timesheet_id, occurred_at) where timesheet_id is not null;
+create index if not exists "idx_OPT_LOG_actor_id_occurred_at"
+  on public."OPT_LOG" (actor_id, occurred_at) where actor_id is not null;
+create index if not exists "idx_OPT_LOG_category_occurred_at" on public."OPT_LOG" (category, occurred_at);
+create index if not exists "idx_OPT_LOG_entity_type_entity_id" on public."OPT_LOG" (entity_type, entity_id);
+create index if not exists "idx_OPT_LOG_project_id_occurred_at"
+  on public."OPT_LOG" (project_id, occurred_at) where project_id is not null;
+create index if not exists "idx_OPT_LOG_subject_user_id_occurred_at"
+  on public."OPT_LOG" (subject_user_id, occurred_at) where subject_user_id is not null;
+
+create or replace function public.fn_opt_log_immutable() returns trigger
+language plpgsql as $$
+begin
+  raise exception 'OPT_LOG_IMMUTABLE';
+end;
+$$;
+
+drop trigger if exists "trg_OPT_LOG_immutable" on public."OPT_LOG";
+create trigger "trg_OPT_LOG_immutable"
+  before update or delete on public."OPT_LOG"
+  for each row execute function public.fn_opt_log_immutable();
+
+create or replace function public.fn_opt_log_request() returns jsonb
+language plpgsql stable as $$
+declare
+  v_raw text := current_setting('request.headers', true);
+begin
+  if v_raw is null or v_raw = '' then
+    return '{}'::jsonb;
+  end if;
+
+  return v_raw::jsonb;
+exception when others then
+  return '{}'::jsonb;
+end;
+$$;
+
+create or replace function public.fn_opt_log_write(p_entry jsonb) returns void
+language plpgsql as $$
+declare
+  v_headers      jsonb  := public.fn_opt_log_request();
+  v_header_actor text   := v_headers ->> 'x-audit-actor-id';
+  v_actor_id     bigint;
+  v_actor_name   varchar(150);
+  v_actor_email  varchar(254);
+  v_actor_role   varchar(30);
+  v_timesheet_id bigint := (p_entry ->> 'timesheetId')::bigint;
+  v_code         varchar(30) := p_entry ->> 'timesheetCode';
+  v_project_id   bigint := (p_entry ->> 'projectId')::bigint;
+  v_project_name varchar(150);
+  v_subject_id   bigint := (p_entry ->> 'subjectUserId')::bigint;
+  v_subject_name varchar(150) := p_entry ->> 'subjectName';
+  v_ts_code      varchar(30);
+  v_ts_project   bigint;
+  v_ts_subject   bigint;
+  v_source       varchar(10);
+begin
+  v_actor_id := coalesce(
+    (p_entry ->> 'actorId')::bigint,
+    case when v_header_actor ~ '^[0-9]{1,18}$' then v_header_actor::bigint end,
+    (p_entry ->> 'fallbackActorId')::bigint
+  );
+
+  if v_timesheet_id is not null then
+    select t.submission_code, a.project_id, a.consultant_id
+      into v_ts_code, v_ts_project, v_ts_subject
+      from public."TIMESHEETS" t
+      join public."PROJECT_ASSIGNMENTS" a on a.id = t.assignment_id
+     where t.id = v_timesheet_id;
+
+    v_code       := coalesce(v_code, v_ts_code);
+    v_project_id := coalesce(v_project_id, v_ts_project);
+    v_subject_id := coalesce(v_subject_id, v_ts_subject);
+  end if;
+
+  if v_project_id is not null then
+    select project_name into v_project_name from public."PROJECTS" where id = v_project_id;
+  end if;
+
+  if v_subject_id is not null and v_subject_name is null then
+    select full_name into v_subject_name from public."USERS" where id = v_subject_id;
+  end if;
+
+  if v_actor_id is not null then
+    select u.full_name, u.email, r.code
+      into v_actor_name, v_actor_email, v_actor_role
+      from public."USERS" u
+      left join public."ROLES" r on r.id = u.role_id
+     where u.id = v_actor_id;
+  end if;
+
+  v_source := case
+    when p_entry ->> 'source' = 'EXTERNAL' and v_actor_id is null then 'EXTERNAL'
+    when v_actor_id is not null then 'USER'
+    else 'SYSTEM'
+  end;
+
+  insert into public."OPT_LOG" (
+    occurred_at, category, action, entity_type, entity_id, entity_label,
+    timesheet_id, timesheet_code, project_id, project_name, subject_user_id, subject_name,
+    actor_id, actor_name, actor_email, actor_role_code, source,
+    from_status, to_status, comments, changes, metadata,
+    request_id, ip_address, user_agent
+  ) values (
+    coalesce((p_entry ->> 'occurredAt')::timestamp, clock_timestamp()),
+    p_entry ->> 'category',
+    p_entry ->> 'action',
+    p_entry ->> 'entityType',
+    (p_entry ->> 'entityId')::bigint,
+    left(p_entry ->> 'entityLabel', 300),
+    v_timesheet_id,
+    v_code,
+    v_project_id,
+    v_project_name,
+    v_subject_id,
+    v_subject_name,
+    v_actor_id,
+    v_actor_name,
+    v_actor_email,
+    coalesce(p_entry ->> 'actorRoleCode', v_actor_role),
+    v_source,
+    p_entry ->> 'fromStatus',
+    p_entry ->> 'toStatus',
+    nullif(p_entry ->> 'comments', ''),
+    coalesce(p_entry -> 'changes', '{}'::jsonb),
+    jsonb_strip_nulls(coalesce(p_entry -> 'metadata', '{}'::jsonb)),
+    left(v_headers ->> 'x-audit-request-id', 128),
+    left(v_headers ->> 'x-audit-ip', 64),
+    left(v_headers ->> 'x-audit-user-agent', 400)
+  );
+end;
+$$;
+
+create or replace function public.fn_opt_log_diff(
+  p_old    jsonb,
+  p_new    jsonb,
+  p_ignore text[]
+) returns jsonb
+language sql immutable as $$
+  select coalesce(
+    jsonb_object_agg(k, jsonb_build_object('from', p_old -> k, 'to', p_new -> k)),
+    '{}'::jsonb
+  )
+    from (
+      select distinct jsonb_object_keys(coalesce(p_old, '{}'::jsonb) || coalesce(p_new, '{}'::jsonb)) as k
+    ) as keys
+   where k <> all(p_ignore)
+     and (p_old -> k) is distinct from (p_new -> k)
+     and not (p_old is null and (p_new -> k) = 'null'::jsonb)
+     and not (p_new is null and (p_old -> k) = 'null'::jsonb);
+$$;
+
+create or replace function public.fn_opt_log_resolve(p_changes jsonb) returns jsonb
+language plpgsql stable as $$
+declare
+  v_key    text;
+  v_side   text;
+  v_id     bigint;
+  v_name   text;
+  v_result jsonb := p_changes;
+begin
+  for v_key in select jsonb_object_keys(p_changes)
+  loop
+    continue when v_key not in (
+      'role_id', 'manager_id', 'user_id', 'consultant_id', 'closed_by', 'company_id', 'client_id', 'project_id'
+    );
+
+    foreach v_side in array array['from', 'to']
+    loop
+      v_id := case
+        when (p_changes -> v_key ->> v_side) ~ '^[0-9]{1,18}$' then (p_changes -> v_key ->> v_side)::bigint
+      end;
+      continue when v_id is null;
+
+      v_name := case v_key
+        when 'role_id'    then (select code from public."ROLES" where id = v_id)
+        when 'company_id' then (select trade_name from public."COMPANIES" where id = v_id)
+        when 'client_id'  then (select client_name from public."CLIENTS" where id = v_id)
+        when 'project_id' then (select project_name from public."PROJECTS" where id = v_id)
+        else (select full_name from public."USERS" where id = v_id)
+      end;
+
+      if v_name is not null then
+        v_result := jsonb_set(v_result, array[v_key, v_side], to_jsonb(v_name));
+      end if;
+    end loop;
+  end loop;
+
+  return v_result;
+end;
+$$;
+
+create or replace function public.fn_opt_log_approval_flow(p_project_id bigint) returns jsonb
+language sql stable as $$
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'seq', s.seq,
+        'type', s.approver_type,
+        'name', case s.approver_type
+          when 'USER' then u.full_name
+          when 'ROLE' then r.code
+          else coalesce(s.approver_name || ' · ', '') || s.approver_email
+        end
+      )
+      order by s.seq
+    ),
+    '[]'::jsonb
+  )
+    from public."PROJECT_APPROVAL_STEPS" s
+    left join public."USERS" u on u.id = s.user_id
+    left join public."ROLES" r on r.id = s.role_id
+   where s.project_id = p_project_id
+     and s.is_active;
+$$;
+
+create or replace function public.fn_opt_log_capture() returns trigger
+language plpgsql as $$
+declare
+  v_old      jsonb := case when tg_op in ('UPDATE', 'DELETE') then to_jsonb(old) end;
+  v_new      jsonb := case when tg_op in ('INSERT', 'UPDATE') then to_jsonb(new) end;
+  v_row      jsonb := coalesce(to_jsonb(new), to_jsonb(old));
+  v_ignore   text[] := array[
+    'id', 'password_hash', 'token_hash', 'token', 'raw_payload', 'has_password',
+    'updated_at', 'updated_by', 'created_at', 'created_by', 'granted_by', 'granted_at',
+    'uploaded_by', 'scheduled_by', 'breakdown', 'storage_path'
+  ];
+  v_action   varchar(40) := case tg_op when 'INSERT' then 'CREATED' when 'UPDATE' then 'UPDATED' else 'DELETED' end;
+  v_changes  jsonb;
+  v_entry    jsonb;
+  v_project  bigint;
+  v_subject  bigint;
+  v_label    text;
+begin
+  if tg_table_name = 'USERS' then
+    v_changes := public.fn_opt_log_diff(
+      v_old, v_new,
+      v_ignore || array['failed_attempts', 'locked_until', 'last_login_at', 'sessions_valid_after']
+    );
+    v_entry := jsonb_build_object(
+      'category', 'USERS',
+      'entityType', 'USER',
+      'entityId', v_row ->> 'id',
+      'entityLabel', (v_row ->> 'full_name') || ' (' || (v_row ->> 'email') || ')',
+      'subjectUserId', case when tg_op <> 'DELETE' then v_row ->> 'id' end,
+      'subjectName', v_row ->> 'full_name'
+    );
+
+    if tg_op = 'UPDATE' then
+      if old.password_hash is distinct from new.password_hash then
+        v_action := 'PASSWORD_CHANGED';
+        v_entry := v_entry || jsonb_build_object('category', 'ACCESS', 'fallbackActorId', new.id);
+        v_changes := '{}'::jsonb;
+      elsif old.last_login_at is distinct from new.last_login_at and new.last_login_at is not null then
+        v_action := 'SIGNED_IN';
+        v_entry := v_entry || jsonb_build_object('category', 'ACCESS', 'fallbackActorId', new.id);
+        v_changes := '{}'::jsonb;
+      elsif new.locked_until is not null and old.locked_until is distinct from new.locked_until then
+        v_action := 'ACCOUNT_LOCKED';
+        v_entry := v_entry || jsonb_build_object(
+          'category', 'ACCESS',
+          'fallbackActorId', new.id,
+          'metadata', jsonb_build_object('attempts', new.failed_attempts, 'lockedUntil', new.locked_until)
+        );
+        v_changes := '{}'::jsonb;
+      elsif new.failed_attempts > old.failed_attempts then
+        v_action := 'SIGN_IN_FAILED';
+        v_entry := v_entry || jsonb_build_object(
+          'category', 'ACCESS',
+          'fallbackActorId', new.id,
+          'metadata', jsonb_build_object('attempts', new.failed_attempts)
+        );
+        v_changes := '{}'::jsonb;
+      elsif v_changes = '{}'::jsonb then
+        return null;
+      end if;
+    end if;
+
+  elsif tg_table_name = 'USER_PERMISSIONS' then
+    v_action := case tg_op when 'INSERT' then 'PERMISSION_GRANTED' when 'DELETE' then 'PERMISSION_REVOKED' end;
+    if v_action is null then
+      return null;
+    end if;
+    select full_name || ' (' || email || ')' into v_label
+      from public."USERS" where id = (v_row ->> 'user_id')::bigint;
+    v_changes := jsonb_build_object(
+      'permission',
+      jsonb_build_object(
+        'from', case when tg_op = 'DELETE' then v_row -> 'permission_code' end,
+        'to',   case when tg_op = 'INSERT' then v_row -> 'permission_code' end
+      )
+    );
+    v_entry := jsonb_build_object(
+      'category', 'USERS',
+      'entityType', 'USER',
+      'entityId', v_row ->> 'user_id',
+      'entityLabel', v_label,
+      'subjectUserId', v_row ->> 'user_id',
+      'metadata', jsonb_build_object('permission', v_row ->> 'permission_code')
+    );
+
+  elsif tg_table_name = 'USER_TOKENS' then
+    if tg_op = 'INSERT' then
+      v_action := case new.purpose when 'INVITE' then 'INVITE_SENT' else 'RESET_REQUESTED' end;
+    elsif tg_op = 'UPDATE' and old.used_at is null and new.used_at is not null then
+      v_action := case new.purpose when 'INVITE' then 'INVITE_ACCEPTED' else 'PASSWORD_RESET' end;
+    else
+      return null;
+    end if;
+    select full_name || ' (' || email || ')' into v_label
+      from public."USERS" where id = (v_row ->> 'user_id')::bigint;
+    v_changes := '{}'::jsonb;
+    v_entry := jsonb_build_object(
+      'category', 'ACCESS',
+      'entityType', 'USER',
+      'entityId', v_row ->> 'user_id',
+      'entityLabel', v_label,
+      'subjectUserId', v_row ->> 'user_id',
+      'fallbackActorId', case when tg_op = 'UPDATE' then v_row ->> 'user_id' end,
+      'metadata', jsonb_build_object('expiresAt', v_row ->> 'expires_at')
+    );
+
+  elsif tg_table_name = 'COMPANIES' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
+    v_entry := jsonb_build_object(
+      'category', 'CATALOG',
+      'entityType', 'COMPANY',
+      'entityId', v_row ->> 'id',
+      'entityLabel', v_row ->> 'trade_name'
+    );
+
+  elsif tg_table_name = 'CLIENTS' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
+    v_entry := jsonb_build_object(
+      'category', 'CATALOG',
+      'entityType', 'CLIENT',
+      'entityId', v_row ->> 'id',
+      'entityLabel', v_row ->> 'client_name'
+    );
+
+  elsif tg_table_name = 'PROJECTS' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore || array['closed_at', 'closed_by']);
+    v_entry := jsonb_build_object(
+      'category', 'CATALOG',
+      'entityType', 'PROJECT',
+      'entityId', v_row ->> 'id',
+      'entityLabel', v_row ->> 'project_name',
+      'projectId', case when tg_op <> 'DELETE' then v_row ->> 'id' end
+    );
+    if tg_op = 'UPDATE' and old.status is distinct from new.status then
+      v_action := case when new.status = 'CLOSED' then 'CLOSED' else 'REOPENED' end;
+      v_entry := v_entry || jsonb_build_object('fromStatus', old.status, 'toStatus', new.status);
+    end if;
+
+  elsif tg_table_name = 'PROJECT_ASSIGNMENTS' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
+    select u.full_name || ' · ' || p.project_name into v_label
+      from public."USERS" u, public."PROJECTS" p
+     where u.id = (v_row ->> 'consultant_id')::bigint
+       and p.id = (v_row ->> 'project_id')::bigint;
+    v_entry := jsonb_build_object(
+      'category', 'ASSIGNMENT',
+      'entityType', 'ASSIGNMENT',
+      'entityId', v_row ->> 'id',
+      'entityLabel', coalesce(v_label, v_row ->> 'assignment_code'),
+      'projectId', v_row ->> 'project_id',
+      'subjectUserId', v_row ->> 'consultant_id',
+      'metadata', jsonb_build_object('assignmentCode', v_row ->> 'assignment_code')
+    );
+
+  elsif tg_table_name = 'ASSIGNMENT_RATE_CHANGES' then
+    v_action := case tg_op when 'INSERT' then 'RATE_CHANGE_SCHEDULED' when 'DELETE' then 'RATE_CHANGE_REMOVED' else 'UPDATED' end;
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore || array['assignment_id']);
+    select a.project_id, a.consultant_id, u.full_name || ' · ' || p.project_name
+      into v_project, v_subject, v_label
+      from public."PROJECT_ASSIGNMENTS" a
+      join public."USERS" u on u.id = a.consultant_id
+      join public."PROJECTS" p on p.id = a.project_id
+     where a.id = (v_row ->> 'assignment_id')::bigint;
+    if v_project is null and tg_op = 'DELETE' then
+      return null;
+    end if;
+    v_entry := jsonb_build_object(
+      'category', 'PAYROLL',
+      'entityType', 'ASSIGNMENT',
+      'entityId', v_row ->> 'assignment_id',
+      'entityLabel', v_label,
+      'projectId', v_project,
+      'subjectUserId', v_subject
+    );
+
+  elsif tg_table_name = 'HOLIDAYS' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
+    v_entry := jsonb_build_object(
+      'category', 'PAYROLL',
+      'entityType', 'HOLIDAY',
+      'entityId', v_row ->> 'id',
+      'entityLabel', (v_row ->> 'name') || ' · ' || (v_row ->> 'country_code') || ' · ' || (v_row ->> 'holiday_date')
+    );
+
+  elsif tg_table_name = 'PAYROLL_COUNTRY_RULES' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
+    v_entry := jsonb_build_object(
+      'category', 'PAYROLL',
+      'entityType', 'PAYROLL_RULE',
+      'entityLabel', v_row ->> 'country_code'
+    );
+
+  elsif tg_table_name = 'TIMESHEET_PAY' then
+    if tg_op <> 'INSERT' then
+      return null;
+    end if;
+    v_action := 'PAY_FROZEN';
+    v_changes := '{}'::jsonb;
+    v_entry := jsonb_build_object(
+      'category', 'PAYROLL',
+      'entityType', 'TIMESHEET',
+      'entityId', new.timesheet_id,
+      'timesheetId', new.timesheet_id,
+      'metadata', jsonb_build_object(
+        'amount', new.amount, 'currency', new.currency,
+        'hourlyRate', new.hourly_rate, 'minutes', new.minutes
+      )
+    );
+
+  elsif tg_table_name = 'PAYMENT_BATCHES' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
+    v_entry := jsonb_build_object(
+      'category', 'PAYROLL',
+      'entityType', 'PAYMENT_BATCH',
+      'entityId', v_row ->> 'id',
+      'entityLabel', v_row ->> 'reference'
+    );
+
+  elsif tg_table_name = 'PAYMENTS' then
+    v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore || array['timesheet_id', 'batch_id']);
+    v_entry := jsonb_build_object(
+      'category', 'PAYROLL',
+      'entityType', 'TIMESHEET',
+      'entityId', v_row ->> 'timesheet_id',
+      'timesheetId', v_row ->> 'timesheet_id'
+    );
+    if tg_op = 'UPDATE' and old.status is distinct from new.status then
+      v_entry := v_entry || jsonb_build_object('fromStatus', old.status, 'toStatus', new.status);
+    end if;
+
+  elsif tg_table_name = 'TIMESHEETS' then
+    if tg_op <> 'DELETE' then
+      return null;
+    end if;
+    select a.project_id, a.consultant_id into v_project, v_subject
+      from public."PROJECT_ASSIGNMENTS" a where a.id = old.assignment_id;
+    v_changes := '{}'::jsonb;
+    v_entry := jsonb_build_object(
+      'category', 'WORKFLOW',
+      'entityType', 'TIMESHEET',
+      'entityId', old.id,
+      'timesheetId', old.id,
+      'timesheetCode', old.submission_code,
+      'projectId', v_project,
+      'subjectUserId', v_subject,
+      'fromStatus', old.status,
+      'metadata', jsonb_build_object(
+        'weekStart', old.week_start_date, 'weekEnd', old.week_end_date,
+        'totalHours', old.total_hours, 'cycleNo', old.cycle_no
+      )
+    );
+
+  elsif tg_table_name in ('TIMESHEET_ATTACHMENTS', 'APPROVAL_ATTACHMENTS') then
+    if tg_op = 'UPDATE' then
+      return null;
+    end if;
+    if tg_op = 'DELETE' and not exists (
+      select 1 from public."TIMESHEETS" where id = old.timesheet_id
+    ) then
+      return null;
+    end if;
+    v_action := case tg_op when 'INSERT' then 'EVIDENCE_UPLOADED' else 'EVIDENCE_REMOVED' end;
+    v_changes := '{}'::jsonb;
+    v_entry := jsonb_build_object(
+      'category', 'EVIDENCE',
+      'entityType', 'TIMESHEET',
+      'entityId', v_row ->> 'timesheet_id',
+      'entityLabel', v_row ->> 'file_name',
+      'timesheetId', v_row ->> 'timesheet_id',
+      'fallbackActorId', v_row ->> 'uploaded_by',
+      'metadata', jsonb_build_object(
+        'fileName', v_row ->> 'file_name',
+        'sizeBytes', (v_row ->> 'size_bytes')::integer,
+        'scope', case when tg_table_name = 'APPROVAL_ATTACHMENTS' then 'APPROVAL' else 'TIMESHEET' end
+      )
+    );
+
+  elsif tg_table_name = 'NOTIFICATIONS' then
+    if tg_op = 'INSERT' then
+      v_action := 'NOTIFICATION_CREATED';
+    elsif tg_op = 'UPDATE' and old.email_status is distinct from new.email_status
+          and new.email_status in ('SENT', 'FAILED', 'SKIPPED') then
+      v_action := 'EMAIL_' || new.email_status;
+    else
+      return null;
+    end if;
+    v_changes := '{}'::jsonb;
+    v_entry := jsonb_build_object(
+      'category', 'NOTIFICATION',
+      'entityType', 'NOTIFICATION',
+      'entityId', new.id,
+      'entityLabel', new.title,
+      'timesheetId', new.timesheet_id,
+      'subjectUserId', new.user_id,
+      'metadata', jsonb_build_object(
+        'kind', new.kind,
+        'title', new.title,
+        'attempts', case when tg_op = 'UPDATE' then new.email_attempts end,
+        'error', case when new.email_status = 'FAILED' then left(new.email_error, 500) end
+      )
+    );
+
+  elsif tg_table_name = 'APPROVAL_REQUESTS' then
+    if tg_op = 'INSERT' then
+      v_action := 'APPROVAL_EMAIL_SENT';
+      v_entry := jsonb_build_object('category', 'NOTIFICATION');
+    elsif tg_op = 'UPDATE' and old.status is distinct from new.status then
+      v_action := case new.status
+        when 'APPROVED' then 'CLIENT_APPROVED'
+        when 'REJECTED' then 'CLIENT_REJECTED'
+        else 'REQUEST_EXPIRED'
+      end;
+      v_entry := jsonb_build_object(
+        'category', 'WORKFLOW',
+        'source', 'EXTERNAL',
+        'fromStatus', old.status,
+        'toStatus', new.status,
+        'comments', new.response_note
+      );
+    else
+      return null;
+    end if;
+    v_changes := '{}'::jsonb;
+    v_entry := v_entry || jsonb_build_object(
+      'entityType', 'TIMESHEET',
+      'entityId', new.timesheet_id,
+      'entityLabel', new.recipient_email,
+      'timesheetId', new.timesheet_id,
+      'metadata', jsonb_build_object(
+        'recipientEmail', new.recipient_email,
+        'expiresAt', new.expires_at
+      )
+    );
+
+  else
+    return null;
+  end if;
+
+  if v_action = 'UPDATED' and v_changes = '{}'::jsonb then
+    return null;
+  end if;
+
+  if v_action = 'UPDATED' and v_changes ? 'is_active'
+     and (select count(*) from jsonb_object_keys(v_changes - 'end_date')) = 1 then
+    v_action := case when (v_new ->> 'is_active')::boolean then 'ACTIVATED' else 'DEACTIVATED' end;
+  end if;
+
+  perform public.fn_opt_log_write(
+    v_entry || jsonb_build_object('action', v_action, 'changes', public.fn_opt_log_resolve(v_changes))
+  );
+
+  return null;
+end;
+$$;
+
+create or replace function public.fn_opt_log_workflow() returns trigger
+language plpgsql as $$
+declare
+  v_timesheet public."TIMESHEETS";
+begin
+  select * into v_timesheet from public."TIMESHEETS" where id = new.timesheet_id;
+
+  perform public.fn_opt_log_write(jsonb_build_object(
+    'occurredAt', new.occurred_at,
+    'category', 'WORKFLOW',
+    'action', new.event_type,
+    'entityType', 'TIMESHEET',
+    'entityId', new.timesheet_id,
+    'timesheetId', new.timesheet_id,
+    'actorId', new.actor_id,
+    'actorRoleCode', new.actor_role_code,
+    'fromStatus', new.from_status,
+    'toStatus', new.to_status,
+    'comments', new.comments,
+    'metadata', coalesce(new.metadata, '{}'::jsonb) || jsonb_build_object(
+      'eventId', new.id,
+      'cycleNo', new.cycle_no,
+      'fromSeq', new.from_seq,
+      'toSeq', new.to_seq,
+      'weekStart', v_timesheet.week_start_date,
+      'weekEnd', v_timesheet.week_end_date,
+      'totalHours', v_timesheet.total_hours
+    )
+  ));
+
+  return null;
+end;
+$$;
+
+drop trigger if exists "trg_TIMESHEET_EVENTS_opt_log" on public."TIMESHEET_EVENTS";
+create trigger "trg_TIMESHEET_EVENTS_opt_log"
+  after insert on public."TIMESHEET_EVENTS"
+  for each row execute function public.fn_opt_log_workflow();
+
+drop trigger if exists "trg_TIMESHEETS_opt_log" on public."TIMESHEETS";
+create trigger "trg_TIMESHEETS_opt_log"
+  after delete on public."TIMESHEETS"
+  for each row execute function public.fn_opt_log_capture();
+
+do $$
+declare
+  v_table text;
+begin
+  foreach v_table in array array[
+    'USERS', 'USER_PERMISSIONS', 'USER_TOKENS', 'COMPANIES', 'CLIENTS', 'PROJECTS',
+    'PROJECT_ASSIGNMENTS', 'ASSIGNMENT_RATE_CHANGES', 'HOLIDAYS', 'PAYROLL_COUNTRY_RULES',
+    'TIMESHEET_PAY', 'PAYMENT_BATCHES', 'PAYMENTS', 'TIMESHEET_ATTACHMENTS',
+    'APPROVAL_ATTACHMENTS', 'NOTIFICATIONS', 'APPROVAL_REQUESTS'
+  ]
+  loop
+    execute format('drop trigger if exists %I on public.%I', 'trg_' || v_table || '_opt_log', v_table);
+    execute format(
+      'create trigger %I after insert or update or delete on public.%I '
+      'for each row execute function public.fn_opt_log_capture()',
+      'trg_' || v_table || '_opt_log',
+      v_table
+    );
+  end loop;
+end;
+$$;
+
 alter table public."ROLES"                  enable row level security;
 alter table public."USERS"                  enable row level security;
 alter table public."USER_TOKENS"            enable row level security;
@@ -2185,6 +2875,7 @@ alter table public."PAYMENTS"               enable row level security;
 alter table public."USER_PERMISSIONS"       enable row level security;
 alter table public."HOLIDAYS"               enable row level security;
 alter table public."PAYROLL_COUNTRY_RULES"  enable row level security;
+alter table public."OPT_LOG"                enable row level security;
 
 insert into public."ROLES" (code, name) values
   ('CONSULTANT',       'Consultant'),

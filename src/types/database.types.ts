@@ -278,6 +278,35 @@ type NotificationsRow = {
   dedupe_key: string | null;
 };
 
+type OptLogRow = {
+  id: number;
+  occurred_at: string;
+  category: string;
+  action: string;
+  entity_type: string;
+  entity_id: number | null;
+  entity_label: string | null;
+  timesheet_id: number | null;
+  timesheet_code: string | null;
+  project_id: number | null;
+  project_name: string | null;
+  subject_user_id: number | null;
+  subject_name: string | null;
+  actor_id: number | null;
+  actor_name: string | null;
+  actor_email: string | null;
+  actor_role_code: string | null;
+  source: string;
+  from_status: string | null;
+  to_status: string | null;
+  comments: string | null;
+  changes: Json;
+  metadata: Json;
+  request_id: string | null;
+  ip_address: string | null;
+  user_agent: string | null;
+};
+
 type InsertOf<Row extends { id: number }, Optional extends keyof Row = never> = Omit<
   Row,
   'id' | Optional
@@ -411,6 +440,12 @@ export type Database = {
         Insert: Pick<PayrollCountryRulesRow, 'country_code'> &
           Partial<Omit<PayrollCountryRulesRow, 'country_code'>>;
         Update: Partial<PayrollCountryRulesRow>;
+        Relationships: [];
+      };
+      OPT_LOG: {
+        Row: OptLogRow;
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
         Relationships: [];
       };
       HOLIDAYS: {
