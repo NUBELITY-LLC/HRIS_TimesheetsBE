@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { approvalsRouter } from '../modules/approvals/approvals.routes.js';
+import { auditRouter } from '../modules/audit/audit.routes.js';
 import { authRouter } from '../modules/auth/auth.routes.js';
 import { clientsRouter } from '../modules/clients/clients.routes.js';
 import { companiesRouter } from '../modules/companies/companies.routes.js';
@@ -28,3 +29,4 @@ apiRouter.use('/approvals', approvalsRouter);
 apiRouter.use('/notifications', notificationsRouter);
 apiRouter.use('/reports', reportsRouter);
 apiRouter.use('/jobs', jobsRouter);
+apiRouter.use('/audit', auditRouter);

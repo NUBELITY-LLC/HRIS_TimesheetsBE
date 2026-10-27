@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { findPermissionCodes, findSessionState } from '../modules/auth/auth.repository.js';
 import { ApiError } from '../utils/ApiError.js';
+import { setAuditActor } from '../utils/auditContext.js';
 import { parseDbTimestamp } from '../utils/timestamps.js';
 import type { PermissionCode } from '../utils/permissions.js';
 import { verifyAccessToken } from '../utils/jwt.js';
@@ -54,6 +55,7 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
       roleCode: payload.roleCode,
       mustChangePassword: payload.mustChangePassword,
     };
+    setAuditActor(id);
     next();
   } catch (error) {
     next(error);
