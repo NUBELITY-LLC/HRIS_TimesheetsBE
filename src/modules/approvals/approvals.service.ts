@@ -476,7 +476,6 @@ export type ApprovalDetailView = {
   onBehalf: boolean;
   canDecide: boolean;
   canApproveOnBehalf: boolean;
-  canSeeActivities: boolean;
   submissionCode: string | null;
   timesheetStatus: TimesheetStatus;
   currentSeq: number | null;
@@ -570,13 +569,11 @@ export async function getApprovalDetail(
   const project = assignment.project!;
   const client = project.client!;
 
-  const canSeeActivities = actor.roleCode !== ROLE_FINANCE;
-
   const [days, steps, attachments, timesheetAttachments, payByTimesheet] = await Promise.all([
-    canSeeActivities ? findDays(timesheet.id) : Promise.resolve([]),
+    findDays(timesheet.id),
     findApprovals(timesheet.id, timesheet.cycle_no),
     repository.findAttachmentsByTimesheet(timesheet.id),
-    canSeeActivities ? findTimesheetAttachments(timesheet.id) : Promise.resolve([]),
+    findTimesheetAttachments(timesheet.id),
     payFor([timesheet.id], actor),
   ]);
   const pay = payByTimesheet.get(timesheet.id);
@@ -597,7 +594,6 @@ export async function getApprovalDetail(
     onBehalf: access.onBehalf,
     canDecide: access.canDecide,
     canApproveOnBehalf: access.canApproveOnBehalf,
-    canSeeActivities,
     submissionCode: timesheet.submission_code,
     timesheetStatus: timesheet.status,
     currentSeq: timesheet.current_seq,
@@ -672,6 +668,7 @@ export async function exportApprovalTimesheet(
   const amount = days.reduce((total, day) => total + day.amount, 0);
 
   return exportTimesheetById(timesheet.id, format, {
+    timesheetIds,
     currency: timesheet.assignment?.currency ?? '',
     amount: Math.round(amount * 100) / 100,
     rates,
@@ -692,10 +689,6 @@ export async function getTimesheetAttachmentLink(
   actor: Actor,
 ): Promise<{ url: string; fileName: string; mimeType: string }> {
   const { context } = await loadApprovalContext(approvalId, actor);
-
-  if (actor.roleCode === ROLE_FINANCE) {
-    throw ApiError.notFound('La evidencia no existe');
-  }
 
   return signTimesheetAttachment(context.timesheet!.id, attachmentId);
 }
