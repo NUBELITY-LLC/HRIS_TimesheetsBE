@@ -5,11 +5,13 @@ import type { ProjectStatus } from '../../utils/projects.js';
 import { RpcError } from '../../utils/rpc.js';
 import { queueNotificationEmails } from '../notifications/notifications.emails.js';
 import { deliverApprovalRequests } from '../notifications/notifications.mailer.js';
+import { zonedWallClock } from '../audit/audit.time.js';
 import * as repository from './timesheets.repository.js';
 import {
   activityLogCode,
   renderActivityLog,
   type ActivityLogCosts,
+  type ActivityLogApproval,
   type ExportFormat,
   type ExportedFile,
 } from './timesheets.export.js';
@@ -922,6 +924,7 @@ export async function getTeamSummary(
 }
 
 export type ExportCosts = ActivityLogCosts & {
+  timesheetIds: number[];
   periodStart: string;
   periodEnd: string;
   days: { date: string; minutes: number; hourlyRate: number; amount: number }[];
@@ -962,6 +965,51 @@ export async function findFortnightTimesheets(
   return { period, timesheetIds: ids.includes(record.id) ? ids : [...ids, record.id] };
 }
 
+const APPROVER_ROLE_LABELS: Record<string, string> = {
+  ADMIN: 'Administrator',
+  MANAGER: 'Manager',
+  FINANCE: 'Finance',
+};
+
+function approverLabel(step: ApprovalStepView): string {
+  return (
+    step.approverName ??
+    step.approverEmail ??
+    APPROVER_ROLE_LABELS[step.approverRoleCode ?? ''] ??
+    `Step ${step.seq}`
+  );
+}
+
+const APPROVAL_STATUS_LABELS: Record<string, string> = {
+  PENDING: 'Pending',
+  APPROVED: 'Approved',
+  REJECTED_TO_PREVIOUS: 'Returned',
+  REJECTED_TO_CONSULTANT: 'Returned',
+};
+
+function approvalDate(decidedAt: string): string {
+  const utc = /(z|[+-]\d{2}(:?\d{2})?)$/i.test(decidedAt) ? decidedAt : `${decidedAt}Z`;
+  return zonedWallClock(new Date(utc)).toISOString().slice(0, 10);
+}
+
+function toActivityLogApproval(step: ApprovalStepView): ActivityLogApproval {
+  const approver = approverLabel(step);
+  const decider = step.decidedBy?.name;
+
+  return {
+    seq: step.seq,
+    approver: decider && decider !== approver ? `${approver} (${decider})` : approver,
+    approved: step.status === 'APPROVED',
+    approvedOn: step.status === 'APPROVED' && step.decidedAt ? approvalDate(step.decidedAt) : null,
+    status: APPROVAL_STATUS_LABELS[step.status] ?? step.status,
+    comments: step.comments?.trim() || null,
+  };
+}
+
+function sortedActivities(day: repository.DayRecord) {
+  return day.activities.slice().sort((a, b) => a.line_no - b.line_no);
+}
+
 export async function exportTimesheetById(
   timesheetId: number,
   format: ExportFormat,
@@ -979,26 +1027,28 @@ export async function exportTimesheetById(
     throw ApiError.notFound('La asignacion del timesheet no existe');
   }
 
-  const [days, holidays] = await Promise.all([
-    repository.findDays(record.id),
+  const [dayGroups, approvals, holidays] = await Promise.all([
+    Promise.all((costs?.timesheetIds ?? [record.id]).map((id) => repository.findDays(id))),
+    repository.findApprovals(record.id, record.cycle_no),
     repository.findHolidaysInRange({
       countryCode: assignment.country_code,
-      from: record.week_start_date,
-      to: record.week_end_date,
+      from: costs?.periodStart ?? record.week_start_date,
+      to: costs?.periodEnd ?? record.week_end_date,
     }),
   ]);
+  const days = dayGroups.flat();
+  const daysByDate = new Map(days.map((day) => [day.work_date, day]));
   const holidayNames = new Map(holidays.map((holiday) => [holiday.holiday_date, holiday.name]));
 
+  const noteOf = (date: string) => daysByDate.get(date)?.note ?? holidayNames.get(date) ?? null;
+
   const rows = days.flatMap((day) =>
-    day.activities
-      .slice()
-      .sort((a, b) => a.line_no - b.line_no)
-      .map((activity) => ({
-        date: day.work_date,
-        hours: Number(activity.hours),
-        activity: activity.activity,
-        note: day.note ?? holidayNames.get(day.work_date) ?? null,
-      })),
+    sortedActivities(day).map((activity) => ({
+      date: day.work_date,
+      hours: Number(activity.hours),
+      activity: activity.activity,
+      note: noteOf(day.work_date),
+    })),
   );
 
   return renderActivityLog(
@@ -1011,15 +1061,24 @@ export async function exportTimesheetById(
       periodStart: costs?.periodStart ?? record.week_start_date,
       periodEnd: costs?.periodEnd ?? record.week_end_date,
       rows: costs
-        ? costs.days.map((day) => ({
-            date: day.date,
-            hours: minutesToHours(day.minutes),
-            activity: '',
-            note: null,
-            hourlyRate: day.hourlyRate,
-            amount: day.amount,
-          }))
+        ? costs.days.map((day) => {
+            const detail = daysByDate.get(day.date);
+
+            return {
+              date: day.date,
+              hours: minutesToHours(day.minutes),
+              activity: detail
+                ? sortedActivities(detail)
+                    .map((activity) => activity.activity)
+                    .join('\n')
+                : '',
+              note: noteOf(day.date),
+              hourlyRate: day.hourlyRate,
+              amount: day.amount,
+            };
+          })
         : rows,
+      approvals: approvals.map(toApprovalView).map(toActivityLogApproval),
       costs: costs ? { currency: costs.currency, amount: costs.amount, rates: costs.rates } : null,
     },
     format,

@@ -19,6 +19,15 @@ export type ActivityLogCosts = {
   rates: { from: string; hourlyRate: number }[];
 };
 
+export type ActivityLogApproval = {
+  seq: number;
+  approver: string;
+  approved: boolean;
+  approvedOn: string | null;
+  status: string;
+  comments: string | null;
+};
+
 export type ActivityLog = {
   code: string;
   consultantName: string;
@@ -28,6 +37,7 @@ export type ActivityLog = {
   periodStart: string;
   periodEnd: string;
   rows: ActivityLogRow[];
+  approvals: ActivityLogApproval[];
   costs?: ActivityLogCosts | null;
 };
 
@@ -93,7 +103,31 @@ const DETAIL_KEYS: ColumnKey[] = [
   'notes',
 ];
 
-const SUMMARY_KEYS: ColumnKey[] = ['collaborator', 'period', 'date', 'hours', 'rate', 'amount'];
+const SUMMARY_KEYS: ColumnKey[] = [
+  'collaborator',
+  'period',
+  'date',
+  'hours',
+  'rate',
+  'amount',
+  'activity',
+  'notes',
+];
+
+const APPROVAL_HEADERS = ['Step', 'Approver', 'Status', 'Approved on', 'Comments'];
+
+const APPROVAL_PDF_WIDTHS = [36, 200, 60, 66];
+
+const SUMMARY_PDF_WIDTHS: Partial<Record<ColumnKey, number>> = {
+  id: 70,
+  collaborator: 85,
+  period: 60,
+  date: 54,
+  hours: 34,
+  rate: 62,
+  amount: 72,
+  notes: 80,
+};
 
 function columnLetter(index: number): string {
   return String.fromCharCode(65 + index);
@@ -101,14 +135,10 @@ function columnLetter(index: number): string {
 
 function layoutOf(log: ActivityLog): Layout {
   const keys = log.costs ? SUMMARY_KEYS : DETAIL_KEYS;
-  const columns = [...(log.assignmentCode ? (['id'] as ColumnKey[]) : []), ...keys].map(
-    (key) => COLUMNS[key],
-  );
-
-  if (log.costs) {
-    const collaborator = columns.find((column) => column.key === 'collaborator')!;
-    columns[columns.indexOf(collaborator)] = { ...collaborator, pdfWidth: 0 };
-  }
+  const columns = [...(log.assignmentCode ? (['id'] as ColumnKey[]) : []), ...keys].map((key) => ({
+    ...COLUMNS[key],
+    pdfWidth: (log.costs ? SUMMARY_PDF_WIDTHS[key] : undefined) ?? COLUMNS[key].pdfWidth,
+  }));
 
   return {
     title: log.costs ? 'HOURS SUMMARY' : 'ACTIVITY LOG',
@@ -201,6 +231,21 @@ function totalHours(log: ActivityLog): number {
   return Math.round(log.rows.reduce((total, row) => total + row.hours, 0) * 100) / 100;
 }
 
+function approvalsTitle(log: ActivityLog): string {
+  const approved = log.approvals.filter((step) => step.approved).length;
+  return `APPROVALS: ${approved} of ${log.approvals.length} required`;
+}
+
+function approvalValues(step: ActivityLogApproval): string[] {
+  return [
+    String(step.seq),
+    step.approver,
+    step.status,
+    step.approvedOn ? displayDate(step.approvedOn) : '',
+    step.comments ?? '',
+  ];
+}
+
 function hoursLabel(log: ActivityLog): string {
   return log.costs ? 'Period hours' : 'Hours worked';
 }
@@ -218,7 +263,6 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
       fitToPage: true,
       fitToWidth: 1,
       fitToHeight: 0,
-      printTitlesRow: '1:6',
     },
   });
 
@@ -267,10 +311,12 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   workday.getCell(2).value = workdayLabel(log);
   workday.getCell(1).font = { bold: true };
 
-  const costs = sheet.getRow(4);
-  styleRow(costs);
+  let nextRow = 4;
 
   if (log.costs) {
+    const costs = sheet.getRow(nextRow);
+    styleRow(costs);
+    nextRow += 1;
     const amountFormat = `#,##0.00 "${log.costs.currency}"`;
     workday.getCell(4).value = 'Hourly rate';
     workday.getCell(4).font = { bold: true };
@@ -287,15 +333,71 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
     costs.getCell(5).numFmt = amountFormat;
   }
 
-  sheet.mergeCells(`A5:${layout.lastColumn}5`);
-  const period = sheet.getCell('A5');
+  if (log.approvals.length) {
+    nextRow += 1;
+    sheet.mergeCells(`A${nextRow}:${layout.lastColumn}${nextRow}`);
+    const band = sheet.getCell(`A${nextRow}`);
+    band.value = approvalsTitle(log);
+    band.font = whiteBold;
+    band.fill = fill(COLORS.period);
+    band.alignment = wrapTop;
+    band.border = rule;
+    nextRow += 1;
+
+    const spans: [number, number][] = [
+      [1, 1],
+      [2, 3],
+      [4, 4],
+      [5, 5],
+      [6, layout.columns.length],
+    ];
+    const spanWidth = ([from, to]: [number, number]) =>
+      layout.columns.slice(from - 1, to).reduce((total, column) => total + column.width, 0);
+    const lineCount = (text: string, width: number) =>
+      text
+        .split('\n')
+        .reduce((lines, line) => lines + Math.max(Math.ceil(line.length / width), 1), 0);
+
+    const approvalRow = (values: string[], header: boolean) => {
+      const row = sheet.getRow(nextRow);
+      styleRow(row);
+      spans.forEach(([from, to], index) => {
+        const cell = row.getCell(from);
+        cell.value = values[index] ?? '';
+        if (header) {
+          cell.font = whiteBold;
+          cell.fill = fill(COLORS.header);
+        }
+        if (to > from) {
+          sheet.mergeCells(`${columnLetter(from - 1)}${nextRow}:${columnLetter(to - 1)}${nextRow}`);
+        }
+      });
+      row.height =
+        15 *
+        Math.max(...values.map((value, index) => lineCount(value, spanWidth(spans[index]!))));
+      nextRow += 1;
+    };
+
+    approvalRow(APPROVAL_HEADERS, true);
+    log.approvals.forEach((step) => approvalRow(approvalValues(step), false));
+  }
+
+  styleRow(sheet.getRow(nextRow));
+  nextRow += 1;
+
+  const periodRow = nextRow;
+  const headerRow = periodRow + 1;
+  sheet.pageSetup.printTitlesRow = `${periodRow}:${headerRow}`;
+
+  sheet.mergeCells(`A${periodRow}:${layout.lastColumn}${periodRow}`);
+  const period = sheet.getCell(`A${periodRow}`);
   period.value = periodTitle(log);
   period.font = whiteBold;
   period.fill = fill(COLORS.period);
   period.alignment = wrapTop;
   period.border = rule;
 
-  const header = sheet.getRow(6);
+  const header = sheet.getRow(headerRow);
   layout.columns.forEach((column, index) => {
     const cell = header.getCell(index + 1);
     cell.value = column.header;
@@ -305,7 +407,7 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
     cell.border = rule;
   });
 
-  const firstDataRow = 7;
+  const firstDataRow = headerRow + 1;
   const amountFormat = `#,##0.00 "${log.costs?.currency ?? ''}"`;
   log.rows.forEach((entry, index) => {
     const row = sheet.getRow(firstDataRow + index);
@@ -416,12 +518,16 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
         .stroke();
     };
 
-    const cells = (values: string[], options: { bold?: boolean; fillColor?: string }) => {
+    const cells = (
+      values: string[],
+      options: { bold?: boolean; fillColor?: string; widths?: number[] },
+    ) => {
+      const widths = options.widths ?? columns;
       doc.font(options.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(fontSize);
       const height =
         Math.max(
           ...values.map((value, index) =>
-            doc.heightOfString(value || ' ', { width: columns[index]! - padding * 2 }),
+            doc.heightOfString(value || ' ', { width: widths[index]! - padding * 2 }),
           ),
         ) +
         padding * 2;
@@ -436,8 +542,8 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
           values.forEach((value, index) => {
             doc
               .fillColor(options.fillColor ? `#${COLORS.white}` : `#${COLORS.ink}`)
-              .text(value, x + padding, y + padding, { width: columns[index]! - padding * 2 });
-            x += columns[index]!;
+              .text(value, x + padding, y + padding, { width: widths[index]! - padding * 2 });
+            x += widths[index]!;
           });
           rule(y + height);
         },
@@ -481,6 +587,22 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
       doc.y = Math.max(doc.y, y + 12) + 2;
       rule(doc.y);
       doc.y += 4;
+    }
+
+    if (log.approvals.length) {
+      const fixedApproval = APPROVAL_PDF_WIDTHS.reduce((sum, value) => sum + value, 0);
+      const widths = [...APPROVAL_PDF_WIDTHS, width - fixedApproval];
+
+      doc.moveDown(0.4);
+      band(approvalsTitle(log), COLORS.period, 10, 'left');
+      doc.moveDown(0.2);
+      place(cells(APPROVAL_HEADERS, { bold: true, fillColor: COLORS.header, widths }));
+
+      for (const step of log.approvals) {
+        const row = cells(approvalValues(step), { widths });
+        if (doc.y + row.height > bottom) doc.addPage();
+        place(row);
+      }
     }
 
     doc.moveDown(0.4);
