@@ -3,6 +3,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { ok } from '../../utils/httpResponse.js';
 import * as authService from './auth.service.js';
 import type {
+  AcceptInvitationInput,
   ChangePasswordInput,
   ForgotPasswordInput,
   LoginInput,
@@ -33,10 +34,9 @@ export async function describeInvitation(req: Request, res: Response): Promise<v
 }
 
 export async function acceptInvitation(req: Request, res: Response): Promise<void> {
-  const result = await authService.completeAccountLink(
+  const result = await authService.acceptInvitation(
     tokenParam(req),
-    'INVITE',
-    req.body as SetPasswordInput,
+    req.body as AcceptInvitationInput,
   );
   ok(res, result);
 }
@@ -46,9 +46,8 @@ export async function describePasswordReset(req: Request, res: Response): Promis
 }
 
 export async function completePasswordReset(req: Request, res: Response): Promise<void> {
-  const result = await authService.completeAccountLink(
+  const result = await authService.completePasswordReset(
     tokenParam(req),
-    'RESET',
     req.body as SetPasswordInput,
   );
   ok(res, result);

@@ -40,6 +40,19 @@ export const setPasswordSchema = z.object({
 
 export type SetPasswordInput = z.infer<typeof setPasswordSchema>;
 
+export const acceptInvitationSchema = setPasswordSchema.extend({
+  acceptPolicies: z.literal(true, {
+    message: 'Debes aceptar la politica de privacidad y seguridad',
+  }),
+  policyVersion: z
+    .string({ message: 'La version de la politica es obligatoria' })
+    .trim()
+    .min(1, 'La version de la politica es obligatoria')
+    .max(20, 'La version de la politica excede la longitud permitida'),
+});
+
+export type AcceptInvitationInput = z.infer<typeof acceptInvitationSchema>;
+
 export const forgotPasswordSchema = z.object({
   email: z
     .string({ message: 'El correo es obligatorio' })
