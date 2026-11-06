@@ -2549,24 +2549,6 @@ begin
       'metadata', jsonb_build_object('expiresAt', v_row ->> 'expires_at')
     );
 
-  elsif tg_table_name = 'POLICY_ACCEPTANCES' then
-    if tg_op <> 'INSERT' then
-      return null;
-    end if;
-    v_action := 'POLICY_ACCEPTED';
-    select full_name || ' (' || email || ')' into v_label
-      from public."USERS" where id = new.user_id;
-    v_changes := '{}'::jsonb;
-    v_entry := jsonb_build_object(
-      'category', 'ACCESS',
-      'entityType', 'USER',
-      'entityId', new.user_id,
-      'entityLabel', v_label,
-      'subjectUserId', new.user_id,
-      'fallbackActorId', new.user_id,
-      'metadata', jsonb_build_object('policy', new.policy_code, 'policyVersion', new.policy_version)
-    );
-
   elsif tg_table_name = 'COMPANIES' then
     v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
     v_entry := jsonb_build_object(
@@ -2865,7 +2847,7 @@ declare
   v_table text;
 begin
   foreach v_table in array array[
-    'USERS', 'USER_PERMISSIONS', 'USER_TOKENS', 'POLICY_ACCEPTANCES', 'COMPANIES', 'CLIENTS', 'PROJECTS',
+    'USERS', 'USER_PERMISSIONS', 'USER_TOKENS', 'COMPANIES', 'CLIENTS', 'PROJECTS',
     'PROJECT_ASSIGNMENTS', 'ASSIGNMENT_RATE_CHANGES', 'HOLIDAYS', 'PAYROLL_COUNTRY_RULES',
     'TIMESHEET_PAY', 'PAYMENT_BATCHES', 'PAYMENTS', 'TIMESHEET_ATTACHMENTS',
     'APPROVAL_ATTACHMENTS', 'NOTIFICATIONS', 'APPROVAL_REQUESTS'
@@ -2881,6 +2863,28 @@ begin
   end loop;
 end;
 $$;
+
+create or replace function public.fn_opt_log_policy_acceptance() returns trigger
+language plpgsql as $$
+begin
+  perform public.fn_opt_log_write(jsonb_build_object(
+    'category', 'ACCESS',
+    'action', 'POLICY_ACCEPTED',
+    'entityType', 'USER',
+    'entityId', new.user_id,
+    'entityLabel', (select full_name || ' (' || email || ')' from public."USERS" where id = new.user_id),
+    'subjectUserId', new.user_id,
+    'fallbackActorId', new.user_id,
+    'metadata', jsonb_build_object('policy', new.policy_code, 'policyVersion', new.policy_version)
+  ));
+  return null;
+end;
+$$;
+
+drop trigger if exists "trg_POLICY_ACCEPTANCES_opt_log" on public."POLICY_ACCEPTANCES";
+create trigger "trg_POLICY_ACCEPTANCES_opt_log"
+  after insert on public."POLICY_ACCEPTANCES"
+  for each row execute function public.fn_opt_log_policy_acceptance();
 
 alter table public."ROLES"                  enable row level security;
 alter table public."USERS"                  enable row level security;
