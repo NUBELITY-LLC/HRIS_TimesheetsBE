@@ -48,6 +48,18 @@ create table if not exists public."USER_TOKENS" (
 create index if not exists "idx_USER_TOKENS_user_id_purpose"
   on public."USER_TOKENS" (user_id, purpose);
 
+create table if not exists public."POLICY_ACCEPTANCES" (
+  id             bigint      generated always as identity primary key,
+  user_id        bigint      not null references public."USERS"(id) on delete cascade,
+  policy_code    varchar(20) not null,
+  policy_version varchar(20) not null,
+  accepted_at    timestamp   not null default now(),
+  ip_address     varchar(64),
+  user_agent     varchar(400),
+  constraint "chk_POLICY_ACCEPTANCES_policy_code" check (policy_code in ('PRIVACY')),
+  constraint "uq_POLICY_ACCEPTANCES_user_policy_version" unique (user_id, policy_code, policy_version)
+);
+
 create index if not exists "idx_USERS_role_id" on public."USERS" (role_id);
 create index if not exists "idx_USERS_is_active" on public."USERS" (is_active);
 create unique index if not exists "idx_USERS_lower_user_name" on public."USERS" (lower(user_name));
@@ -2537,6 +2549,24 @@ begin
       'metadata', jsonb_build_object('expiresAt', v_row ->> 'expires_at')
     );
 
+  elsif tg_table_name = 'POLICY_ACCEPTANCES' then
+    if tg_op <> 'INSERT' then
+      return null;
+    end if;
+    v_action := 'POLICY_ACCEPTED';
+    select full_name || ' (' || email || ')' into v_label
+      from public."USERS" where id = new.user_id;
+    v_changes := '{}'::jsonb;
+    v_entry := jsonb_build_object(
+      'category', 'ACCESS',
+      'entityType', 'USER',
+      'entityId', new.user_id,
+      'entityLabel', v_label,
+      'subjectUserId', new.user_id,
+      'fallbackActorId', new.user_id,
+      'metadata', jsonb_build_object('policy', new.policy_code, 'policyVersion', new.policy_version)
+    );
+
   elsif tg_table_name = 'COMPANIES' then
     v_changes := public.fn_opt_log_diff(v_old, v_new, v_ignore);
     v_entry := jsonb_build_object(
@@ -2835,7 +2865,7 @@ declare
   v_table text;
 begin
   foreach v_table in array array[
-    'USERS', 'USER_PERMISSIONS', 'USER_TOKENS', 'COMPANIES', 'CLIENTS', 'PROJECTS',
+    'USERS', 'USER_PERMISSIONS', 'USER_TOKENS', 'POLICY_ACCEPTANCES', 'COMPANIES', 'CLIENTS', 'PROJECTS',
     'PROJECT_ASSIGNMENTS', 'ASSIGNMENT_RATE_CHANGES', 'HOLIDAYS', 'PAYROLL_COUNTRY_RULES',
     'TIMESHEET_PAY', 'PAYMENT_BATCHES', 'PAYMENTS', 'TIMESHEET_ATTACHMENTS',
     'APPROVAL_ATTACHMENTS', 'NOTIFICATIONS', 'APPROVAL_REQUESTS'
@@ -2855,6 +2885,7 @@ $$;
 alter table public."ROLES"                  enable row level security;
 alter table public."USERS"                  enable row level security;
 alter table public."USER_TOKENS"            enable row level security;
+alter table public."POLICY_ACCEPTANCES"     enable row level security;
 alter table public."COMPANIES"              enable row level security;
 alter table public."CLIENTS"                enable row level security;
 alter table public."PROJECTS"               enable row level security;

@@ -13,7 +13,9 @@ import {
   sendPasswordResetEmail,
   type AccountRecipient,
 } from './auth.emails.js';
+import { PRIVACY_POLICY } from './auth.policies.js';
 import type {
+  AcceptInvitationInput,
   ChangePasswordInput,
   ForgotPasswordInput,
   LoginInput,
@@ -310,16 +312,14 @@ export async function describeAccountLink(
   };
 }
 
-export async function completeAccountLink(
-  token: string,
+async function completeAccountLink(
+  { tokenId, record }: UsableLink,
   purpose: TokenPurpose,
-  input: SetPasswordInput,
+  password: string,
 ): Promise<LoginResult> {
-  const { tokenId, record } = await resolveLink(token, purpose);
-
   if (!(await consumeToken(tokenId))) throw invalidLinkError(purpose);
 
-  await authRepository.updatePassword(record.id, await hashPassword(input.password));
+  await authRepository.updatePassword(record.id, await hashPassword(password));
   await authRepository.registerSuccessfulLogin(record.id);
 
   logger.info(
@@ -332,6 +332,38 @@ export async function completeAccountLink(
   }
 
   return issueSession({ ...(await toAuthenticatedUser(record)), mustChangePassword: false });
+}
+
+export async function acceptInvitation(
+  token: string,
+  input: AcceptInvitationInput,
+): Promise<LoginResult> {
+  const link = await resolveLink(token, 'INVITE');
+
+  if (input.policyVersion !== PRIVACY_POLICY.version) {
+    throw new ApiError(
+      409,
+      'La politica de privacidad se actualizo, revisala de nuevo antes de continuar',
+      'POLICY_OUTDATED',
+      { currentVersion: PRIVACY_POLICY.version },
+    );
+  }
+
+  await authRepository.recordPolicyAcceptance(link.record.id, PRIVACY_POLICY);
+
+  logger.info(
+    { userId: link.record.id, policy: PRIVACY_POLICY.code, version: PRIVACY_POLICY.version },
+    'Politica de privacidad y seguridad aceptada',
+  );
+
+  return completeAccountLink(link, 'INVITE', input.password);
+}
+
+export async function completePasswordReset(
+  token: string,
+  input: SetPasswordInput,
+): Promise<LoginResult> {
+  return completeAccountLink(await resolveLink(token, 'RESET'), 'RESET', input.password);
 }
 
 async function processResetRequest(email: string): Promise<void> {

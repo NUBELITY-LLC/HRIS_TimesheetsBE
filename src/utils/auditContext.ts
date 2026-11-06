@@ -17,6 +17,10 @@ export function runWithAuditContext<T>(context: AuditContext, callback: () => T)
   return storage.run(context, callback);
 }
 
+export function currentAuditContext(): AuditContext | undefined {
+  return storage.getStore();
+}
+
 export function setAuditActor(actorId: number): void {
   const context = storage.getStore();
   if (context) context.actorId = actorId;

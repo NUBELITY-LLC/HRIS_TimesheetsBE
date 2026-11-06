@@ -1,6 +1,7 @@
 import { supabase } from '../../config/supabase.js';
 import { ApiError } from '../../utils/ApiError.js';
 import { logger } from '../../config/logger.js';
+import { currentAuditContext } from '../../utils/auditContext.js';
 
 export type UserCredentialsRecord = {
   id: number;
@@ -157,4 +158,23 @@ export async function findPermissionCodes(userId: number): Promise<string[]> {
   if (error) fail('findPermissionCodes', error);
 
   return (data ?? []).map((row) => row.permission_code);
+}
+
+export async function recordPolicyAcceptance(
+  userId: number,
+  policy: { code: 'PRIVACY'; version: string },
+): Promise<void> {
+  const context = currentAuditContext();
+  const { error } = await supabase.from('POLICY_ACCEPTANCES').upsert(
+    {
+      user_id: userId,
+      policy_code: policy.code,
+      policy_version: policy.version,
+      ip_address: context?.ip?.slice(0, 64) ?? null,
+      user_agent: context?.userAgent?.slice(0, 400) ?? null,
+    },
+    { onConflict: 'user_id,policy_code,policy_version', ignoreDuplicates: true },
+  );
+
+  if (error) fail('recordPolicyAcceptance', error);
 }

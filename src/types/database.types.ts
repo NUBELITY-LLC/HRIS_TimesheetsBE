@@ -38,6 +38,16 @@ type UserTokensRow = {
   created_at: string;
 };
 
+type PolicyAcceptancesRow = {
+  id: number;
+  user_id: number;
+  policy_code: 'PRIVACY';
+  policy_version: string;
+  accepted_at: string;
+  ip_address: string | null;
+  user_agent: string | null;
+};
+
 type UserPermissionsRow = {
   user_id: number;
   permission_code: string;
@@ -353,6 +363,12 @@ export type Database = {
         Insert: InsertOf<UserTokensRow, 'used_at' | 'created_by' | 'created_at'>;
         Update: Partial<UserTokensRow>;
         Relationships: [ForeignKey<'user_id', 'USERS'>, ForeignKey<'created_by', 'USERS'>];
+      };
+      POLICY_ACCEPTANCES: {
+        Row: PolicyAcceptancesRow;
+        Insert: InsertOf<PolicyAcceptancesRow, 'accepted_at' | 'ip_address' | 'user_agent'>;
+        Update: Partial<PolicyAcceptancesRow>;
+        Relationships: [ForeignKey<'user_id', 'USERS'>];
       };
       USER_PERMISSIONS: {
         Row: UserPermissionsRow;

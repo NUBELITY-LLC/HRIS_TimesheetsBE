@@ -7,6 +7,7 @@ import { requireAuth } from '../../middlewares/auth.js';
 import { asyncHandler } from '../../utils/asyncHandler.js';
 import * as authController from './auth.controller.js';
 import {
+  acceptInvitationSchema,
   accountTokenParamsSchema,
   changePasswordSchema,
   forgotPasswordSchema,
@@ -78,7 +79,7 @@ authRouter.get(
 authRouter.post(
   '/invitations/:token/accept',
   accountLinkRateLimiter,
-  validate({ params: accountTokenParamsSchema, body: setPasswordSchema }),
+  validate({ params: accountTokenParamsSchema, body: acceptInvitationSchema }),
   asyncHandler(authController.acceptInvitation),
 );
 
