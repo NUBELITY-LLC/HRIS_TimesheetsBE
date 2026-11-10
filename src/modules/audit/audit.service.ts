@@ -148,7 +148,7 @@ export async function exportAuditEntries(
   const actorName = (id?: number) => options.actors.find((actor) => actor.id === id)?.fullName;
   const projectName = (id?: number) => options.projects.find((project) => project.id === id)?.name;
 
-  return renderAuditWorkbook({
+  const file = await renderAuditWorkbook({
     entries: rows.map(toEntryView),
     query,
     truncated,
@@ -160,4 +160,6 @@ export async function exportAuditEntries(
       project: projectName(query.projectId),
     },
   });
+
+  return { ...file, label: 'Bitácora de auditoría', records: rows.length };
 }

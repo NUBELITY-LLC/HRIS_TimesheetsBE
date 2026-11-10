@@ -3,6 +3,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { buildPagination, ok, paginated } from '../../utils/httpResponse.js';
 import { validatedQuery } from '../../middlewares/validate.js';
 import { readEvidence } from '../../middlewares/upload.js';
+import { recordDataExport } from '../../utils/dataExports.js';
 import * as approvalsService from './approvals.service.js';
 import { sendExportedFile } from '../timesheets/timesheets.controller.js';
 import type { ExportQuery } from '../timesheets/timesheets.schema.js';
@@ -82,6 +83,11 @@ export async function getAttachment(req: Request, res: Response): Promise<void> 
     requireActor(req),
   );
 
+  await recordDataExport({
+    kind: 'APPROVAL_EVIDENCE',
+    label: `Evidencia ${evidence.fileName} de la aprobación #${Number(req.params.id)}`,
+    records: 1,
+  });
   ok(res, { evidence });
 }
 
@@ -92,6 +98,11 @@ export async function getTimesheetAttachment(req: Request, res: Response): Promi
     requireActor(req),
   );
 
+  await recordDataExport({
+    kind: 'APPROVAL_EVIDENCE',
+    label: `Evidencia ${evidence.fileName} de la aprobación #${Number(req.params.id)}`,
+    records: 1,
+  });
   ok(res, { evidence });
 }
 
@@ -103,6 +114,12 @@ export async function exportTimesheet(req: Request, res: Response): Promise<void
     requireActor(req),
   );
 
+  await recordDataExport({
+    kind: 'APPROVAL_TIMESHEET',
+    label: `Timesheet ${file.fileName}`,
+    records: 1,
+    format: query.format,
+  });
   sendExportedFile(res, file);
 }
 

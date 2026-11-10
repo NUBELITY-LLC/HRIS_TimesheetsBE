@@ -48,6 +48,36 @@ type PolicyAcceptancesRow = {
   user_agent: string | null;
 };
 
+type FeedbackReportsRow = {
+  id: number;
+  tracking_hash: string;
+  category: string;
+  body: string;
+  submitted_on: string;
+  status: string;
+  resolution: string | null;
+  status_changed_at: string | null;
+  status_changed_by: number | null;
+};
+
+type FeedbackAttachmentsRow = {
+  id: number;
+  report_id: number;
+  position: number;
+  storage_path: string;
+  mime_type: string;
+  size_bytes: number;
+};
+
+type FeedbackNotesRow = {
+  id: number;
+  report_id: number;
+  author_id: number | null;
+  kind: string;
+  body: string;
+  created_at: string;
+};
+
 type UserPermissionsRow = {
   user_id: number;
   permission_code: string;
@@ -370,6 +400,27 @@ export type Database = {
         Update: Partial<PolicyAcceptancesRow>;
         Relationships: [ForeignKey<'user_id', 'USERS'>];
       };
+      FEEDBACK_REPORTS: {
+        Row: FeedbackReportsRow;
+        Insert: InsertOf<
+          FeedbackReportsRow,
+          'submitted_on' | 'status' | 'resolution' | 'status_changed_at' | 'status_changed_by'
+        >;
+        Update: Partial<FeedbackReportsRow>;
+        Relationships: [ForeignKey<'status_changed_by', 'USERS'>];
+      };
+      FEEDBACK_ATTACHMENTS: {
+        Row: FeedbackAttachmentsRow;
+        Insert: InsertOf<FeedbackAttachmentsRow>;
+        Update: Partial<FeedbackAttachmentsRow>;
+        Relationships: [ForeignKey<'report_id', 'FEEDBACK_REPORTS'>];
+      };
+      FEEDBACK_NOTES: {
+        Row: FeedbackNotesRow;
+        Insert: InsertOf<FeedbackNotesRow, 'created_at'>;
+        Update: Partial<FeedbackNotesRow>;
+        Relationships: [ForeignKey<'report_id', 'FEEDBACK_REPORTS'>, ForeignKey<'author_id', 'USERS'>];
+      };
       USER_PERMISSIONS: {
         Row: UserPermissionsRow;
         Insert: Omit<UserPermissionsRow, 'granted_by' | 'granted_at'> &
@@ -667,6 +718,20 @@ export type Database = {
       fn_replace_user_permissions: {
         Args: { p_user_id: number; p_permissions: Json; p_actor_id: number };
         Returns: number;
+      };
+      fn_log_data_export: {
+        Args: {
+          p_kind: string;
+          p_label: string;
+          p_records?: number | null;
+          p_format?: string | null;
+          p_filters?: Json;
+        };
+        Returns: undefined;
+      };
+      fn_opt_log_feedback_access: {
+        Args: { p_report_id: number; p_action: string; p_attachment_id?: number | null };
+        Returns: undefined;
       };
       fn_delete_user: {
         Args: { p_user_id: number; p_actor_id: number };

@@ -10,6 +10,8 @@ export const AUDIT_CATEGORIES = [
   'USERS',
   'ACCESS',
   'PAYROLL',
+  'FEEDBACK',
+  'DATA',
 ] as const;
 
 export const AUDIT_SOURCES = ['USER', 'SYSTEM', 'EXTERNAL'] as const;
@@ -56,6 +58,13 @@ export const AUDIT_ACTIONS = [
   'POLICY_ACCEPTED',
   'RESET_REQUESTED',
   'PASSWORD_RESET',
+  'FEEDBACK_STATUS_CHANGED',
+  'FEEDBACK_NOTE_ADDED',
+  'FEEDBACK_REPLY_SENT',
+  'FEEDBACK_VIEWED',
+  'FEEDBACK_EVIDENCE_DOWNLOADED',
+  'DATA_EXPORTED',
+  'BULK_CHANGE',
 ] as const;
 
 export const AUDIT_COLUMNS = [

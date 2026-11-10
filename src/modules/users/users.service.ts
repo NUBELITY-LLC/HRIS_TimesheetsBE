@@ -30,6 +30,7 @@ import {
   canSeeRole,
   grantableRolesFor,
   manageableRolesFor,
+  canChangeOwnPermissions,
   resolvePermissions,
 } from './users.permissions.js';
 import type {
@@ -467,7 +468,7 @@ export async function updateUser(
     const next = permissionsFor(roleCode, input.permissions, actor, current);
 
     if (!sameCodes(current, next)) {
-      if (isSelf) {
+      if (isSelf && !canChangeOwnPermissions(actor.roleCode, current, next)) {
         throw new ApiError(
           403,
           'No puedes cambiar tus propios permisos',

@@ -1,3 +1,7 @@
+import {
+  feedbackCategoryFromLabel,
+  feedbackCategoryLabel,
+} from '../feedback/feedback.export.js';
 import type { ClaimedNotificationEmail } from './notifications.repository.js';
 import type { EmailContent, EmailLocale } from './notifications.templates.js';
 
@@ -85,6 +89,10 @@ const LABELS = {
     review: 'Revisar timesheet',
     view: 'Ver timesheet',
     notifications: 'Ver notificaciones',
+    openInbox: 'Abrir buzón',
+    reviewCase: 'Revisar caso',
+    feedbackCase: 'Caso',
+    category: 'Categoría',
   },
   en: {
     folio: 'Reference',
@@ -100,6 +108,10 @@ const LABELS = {
     review: 'Review timesheet',
     view: 'View timesheet',
     notifications: 'View notifications',
+    openInbox: 'Open inbox',
+    reviewCase: 'Review case',
+    feedbackCase: 'Case',
+    category: 'Category',
   },
 } as const;
 
@@ -256,6 +268,35 @@ function rejected(email: ClaimedNotificationEmail, locale: EmailLocale): Notific
   };
 }
 
+function feedbackReceived(email: ClaimedNotificationEmail, locale: EmailLocale): NotificationCopy {
+  const labels = LABELS[locale];
+  const subject =
+    locale === 'en'
+      ? 'You have a new case to review in the anonymous inbox'
+      : 'Tienes un caso nuevo por revisar en el buzón anónimo';
+
+  const [casePart, categoryPart] = (email.body ?? '').split(' · ');
+  const caseId = casePart?.match(/#(\d+)/)?.[1] ?? null;
+  const category = categoryPart ? feedbackCategoryFromLabel(categoryPart.trim()) : null;
+
+  return {
+    subject,
+    heading: subject,
+    paragraphs: [
+      locale === 'en'
+        ? 'A new case arrived in the anonymous inbox. Review it and follow up from the system.'
+        : 'Llegó un caso nuevo al buzón anónimo. Revísalo y dale seguimiento desde el sistema.',
+    ],
+    details: [
+      [labels.feedbackCase, caseId ? `#${caseId}` : null],
+      [labels.category, category ? feedbackCategoryLabel(category, locale) : null],
+    ],
+    action: caseId
+      ? { label: labels.reviewCase, path: `/feedback/inbox/${caseId}` }
+      : { label: labels.openInbox, path: '/feedback/inbox' },
+  };
+}
+
 const BUILDERS: Record<
   string,
   (email: ClaimedNotificationEmail, locale: EmailLocale) => NotificationCopy | null
@@ -265,6 +306,7 @@ const BUILDERS: Record<
   REVIEW_REQUESTED: reviewRequested,
   APPROVED: approved,
   REJECTED: rejected,
+  FEEDBACK_RECEIVED: feedbackReceived,
 };
 
 export function notificationCopy(

@@ -592,7 +592,7 @@ export async function buildCompanyReport(
 export async function exportHoursReport(query: HoursExportQuery): Promise<ExportedFile> {
   const [report, scopes] = await Promise.all([getHoursReport(query), listScopes()]);
 
-  return renderHoursReport(
+  const file = await renderHoursReport(
     report,
     {
       companyName:
@@ -602,12 +602,18 @@ export async function exportHoursReport(query: HoursExportQuery): Promise<Export
     },
     query.format,
   );
+
+  return {
+    ...file,
+    label: `Reporte de horas de ${report.person.fullName}`,
+    records: report.days.length,
+  };
 }
 
 export async function exportCompanyReport(query: CompanyExportQuery): Promise<ExportedFile> {
   const { report, entries } = await buildCompanyReport(query);
 
-  return renderCompanyReport(
+  const file = await renderCompanyReport(
     report,
     entries,
     {
@@ -621,4 +627,10 @@ export async function exportCompanyReport(query: CompanyExportQuery): Promise<Ex
     },
     query.format,
   );
+
+  return {
+    ...file,
+    label: `Reporte de la empresa ${report.company.name}`,
+    records: entries.length,
+  };
 }
