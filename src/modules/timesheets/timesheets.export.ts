@@ -45,6 +45,8 @@ export type ExportedFile = {
   fileName: string;
   contentType: string;
   body: Buffer;
+  label?: string;
+  records?: number;
 };
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];

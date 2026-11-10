@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { buildPagination, ok, paginated } from '../../utils/httpResponse.js';
 import { validatedQuery } from '../../middlewares/validate.js';
+import { recordDataExport } from '../../utils/dataExports.js';
 import { sendExportedFile } from '../timesheets/timesheets.controller.js';
 import * as reportsService from './reports.service.js';
 import type {
@@ -40,10 +41,26 @@ export async function companyReport(_req: Request, res: Response): Promise<void>
 
 export async function exportHoursReport(_req: Request, res: Response): Promise<void> {
   const query = validatedQuery<HoursExportQuery>(res);
-  sendExportedFile(res, await reportsService.exportHoursReport(query));
+  const file = await reportsService.exportHoursReport(query);
+  await recordDataExport({
+    kind: 'HOURS_REPORT',
+    label: file.label ?? file.fileName,
+    records: file.records,
+    format: query.format,
+    filters: query,
+  });
+  sendExportedFile(res, file);
 }
 
 export async function exportCompanyReport(_req: Request, res: Response): Promise<void> {
   const query = validatedQuery<CompanyExportQuery>(res);
-  sendExportedFile(res, await reportsService.exportCompanyReport(query));
+  const file = await reportsService.exportCompanyReport(query);
+  await recordDataExport({
+    kind: 'COMPANY_REPORT',
+    label: file.label ?? file.fileName,
+    records: file.records,
+    format: query.format,
+    filters: query,
+  });
+  sendExportedFile(res, file);
 }

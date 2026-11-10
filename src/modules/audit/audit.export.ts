@@ -46,6 +46,8 @@ const DETAIL_KEYS = [
   'seq',
   'attempts',
   'policyVersion',
+  'records',
+  'format',
   'error',
 ] as const;
 

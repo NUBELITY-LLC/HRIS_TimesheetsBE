@@ -2864,6 +2864,150 @@ begin
 end;
 $$;
 
+create table if not exists public."FEEDBACK_REPORTS" (
+  id                bigint       generated always as identity primary key,
+  tracking_hash     char(64)     not null unique,
+  category          varchar(30)  not null,
+  body              text         not null,
+  submitted_on      date         not null default (now() at time zone 'America/Mexico_City')::date,
+  status            varchar(15)  not null default 'NEW',
+  resolution        text,
+  status_changed_at timestamp,
+  status_changed_by bigint       references public."USERS"(id) on delete set null,
+  constraint "chk_FEEDBACK_REPORTS_category" check (
+    category in ('WORK_ENVIRONMENT', 'HARASSMENT', 'WORKLOAD', 'PROJECT_CLIENT', 'TOOLS', 'SUGGESTION', 'OTHER')
+  ),
+  constraint "chk_FEEDBACK_REPORTS_status" check (status in ('NEW', 'IN_REVIEW', 'RESOLVED', 'ARCHIVED')),
+  constraint "chk_FEEDBACK_REPORTS_body" check (char_length(body) between 1 and 5000),
+  constraint "chk_FEEDBACK_REPORTS_resolution" check (
+    status <> 'RESOLVED' or char_length(coalesce(resolution, '')) > 0
+  )
+);
+
+create index if not exists "idx_FEEDBACK_REPORTS_status" on public."FEEDBACK_REPORTS" (status);
+create index if not exists "idx_FEEDBACK_REPORTS_submitted_on" on public."FEEDBACK_REPORTS" (submitted_on);
+
+create table if not exists public."FEEDBACK_ATTACHMENTS" (
+  id           bigint       generated always as identity primary key,
+  report_id    bigint       not null references public."FEEDBACK_REPORTS"(id) on delete cascade,
+  position     smallint     not null,
+  storage_path varchar(400) not null unique,
+  mime_type    varchar(120) not null,
+  size_bytes   integer      not null,
+  constraint "chk_FEEDBACK_ATTACHMENTS_size" check (size_bytes > 0 and size_bytes <= 10485760),
+  constraint "uq_FEEDBACK_ATTACHMENTS_report_position" unique (report_id, position)
+);
+
+create table if not exists public."FEEDBACK_NOTES" (
+  id         bigint      generated always as identity primary key,
+  report_id  bigint      not null references public."FEEDBACK_REPORTS"(id) on delete cascade,
+  author_id  bigint      references public."USERS"(id) on delete set null,
+  kind       varchar(10) not null,
+  body       text        not null,
+  created_at timestamp   not null default now(),
+  constraint "chk_FEEDBACK_NOTES_kind" check (kind in ('INTERNAL', 'REPLY')),
+  constraint "chk_FEEDBACK_NOTES_body" check (char_length(body) between 1 and 5000)
+);
+
+create index if not exists "idx_FEEDBACK_NOTES_report_id" on public."FEEDBACK_NOTES" (report_id, created_at);
+
+alter table public."USER_PERMISSIONS" drop constraint if exists "chk_USER_PERMISSIONS_permission_code";
+alter table public."USER_PERMISSIONS" add constraint "chk_USER_PERMISSIONS_permission_code" check (
+  permission_code in (
+    'TIMESHEETS_SUBMIT', 'TIMESHEETS_APPROVE', 'CATALOG_MANAGE', 'USERS_MANAGE', 'REPORTS_VIEW',
+    'PAYROLL_MANAGE', 'FEEDBACK_REVIEW'
+  )
+);
+
+alter table public."NOTIFICATIONS" drop constraint if exists "chk_NOTIFICATIONS_kind";
+alter table public."NOTIFICATIONS" add constraint "chk_NOTIFICATIONS_kind" check (
+  kind is null or
+  kind in ('TASK_ASSIGNED', 'REVIEW_REQUESTED', 'APPROVED', 'REJECTED', 'CLOSED', 'REMINDER', 'FEEDBACK_RECEIVED')
+);
+
+alter table public."OPT_LOG" drop constraint if exists "chk_OPT_LOG_category";
+alter table public."OPT_LOG" add constraint "chk_OPT_LOG_category" check (
+  category in (
+    'WORKFLOW', 'NOTIFICATION', 'EVIDENCE', 'CATALOG', 'ASSIGNMENT', 'USERS', 'ACCESS', 'PAYROLL',
+    'FEEDBACK', 'DATA'
+  )
+);
+
+create or replace function public.fn_opt_log_feedback() returns trigger
+language plpgsql as $$
+begin
+  if tg_table_name = 'FEEDBACK_REPORTS' then
+    if old.status is not distinct from new.status and old.resolution is not distinct from new.resolution then
+      return null;
+    end if;
+
+    perform public.fn_opt_log_write(jsonb_build_object(
+      'category', 'FEEDBACK',
+      'action', 'FEEDBACK_STATUS_CHANGED',
+      'entityType', 'FEEDBACK',
+      'entityId', new.id,
+      'entityLabel', '#' || new.id,
+      'actorId', new.status_changed_by,
+      'fromStatus', old.status,
+      'toStatus', new.status,
+      'comments', case when new.status = 'RESOLVED' then new.resolution end,
+      'metadata', jsonb_build_object('category', new.category)
+    ));
+  elsif tg_table_name = 'FEEDBACK_NOTES' then
+    perform public.fn_opt_log_write(jsonb_build_object(
+      'category', 'FEEDBACK',
+      'action', case new.kind when 'REPLY' then 'FEEDBACK_REPLY_SENT' else 'FEEDBACK_NOTE_ADDED' end,
+      'entityType', 'FEEDBACK',
+      'entityId', new.report_id,
+      'entityLabel', '#' || new.report_id,
+      'actorId', new.author_id,
+      'comments', new.body
+    ));
+  end if;
+
+  return null;
+end;
+$$;
+
+drop trigger if exists "trg_FEEDBACK_REPORTS_opt_log" on public."FEEDBACK_REPORTS";
+create trigger "trg_FEEDBACK_REPORTS_opt_log"
+  after update on public."FEEDBACK_REPORTS"
+  for each row execute function public.fn_opt_log_feedback();
+
+drop trigger if exists "trg_FEEDBACK_NOTES_opt_log" on public."FEEDBACK_NOTES";
+create trigger "trg_FEEDBACK_NOTES_opt_log"
+  after insert on public."FEEDBACK_NOTES"
+  for each row execute function public.fn_opt_log_feedback();
+
+create or replace function public.fn_opt_log_feedback_access(
+  p_report_id     bigint,
+  p_action        varchar,
+  p_attachment_id bigint default null
+) returns void
+language plpgsql as $$
+begin
+  if p_action not in ('FEEDBACK_VIEWED', 'FEEDBACK_EVIDENCE_DOWNLOADED') then
+    raise exception 'FEEDBACK_ACTION_NOT_ALLOWED';
+  end if;
+
+  perform public.fn_opt_log_write(jsonb_build_object(
+    'category', 'FEEDBACK',
+    'action', p_action,
+    'entityType', 'FEEDBACK',
+    'entityId', p_report_id,
+    'entityLabel', '#' || p_report_id,
+    'metadata', jsonb_build_object('attachmentId', p_attachment_id)
+  ));
+end;
+$$;
+
+insert into public."USER_PERMISSIONS" (user_id, permission_code)
+select u.id, 'FEEDBACK_REVIEW'
+  from public."USERS" u
+  join public."ROLES" r on r.id = u.role_id
+ where r.code = 'ADMIN'
+on conflict do nothing;
+
 create or replace function public.fn_opt_log_policy_acceptance() returns trigger
 language plpgsql as $$
 begin
@@ -2890,6 +3034,9 @@ alter table public."ROLES"                  enable row level security;
 alter table public."USERS"                  enable row level security;
 alter table public."USER_TOKENS"            enable row level security;
 alter table public."POLICY_ACCEPTANCES"     enable row level security;
+alter table public."FEEDBACK_REPORTS"       enable row level security;
+alter table public."FEEDBACK_ATTACHMENTS"   enable row level security;
+alter table public."FEEDBACK_NOTES"         enable row level security;
 alter table public."COMPANIES"              enable row level security;
 alter table public."CLIENTS"                enable row level security;
 alter table public."PROJECTS"               enable row level security;
@@ -2969,5 +3116,117 @@ begin
     set public             = false,
         file_size_limit    = excluded.file_size_limit,
         allowed_mime_types = excluded.allowed_mime_types;
+end;
+$$;
+
+create or replace function public.fn_log_data_export(
+  p_kind    varchar,
+  p_label   varchar,
+  p_records integer default null,
+  p_format  varchar default null,
+  p_filters jsonb   default '{}'::jsonb
+) returns void
+language plpgsql as $$
+begin
+  perform public.fn_opt_log_write(jsonb_build_object(
+    'category', 'DATA',
+    'action', 'DATA_EXPORTED',
+    'entityType', 'EXPORT',
+    'entityLabel', p_label,
+    'metadata', jsonb_build_object(
+      'export', p_kind,
+      'format', p_format,
+      'records', p_records,
+      'filters', nullif(coalesce(p_filters, '{}'::jsonb), '{}'::jsonb)
+    )
+  ));
+end;
+$$;
+
+create or replace function public.fn_opt_log_bulk_threshold() returns integer
+language sql immutable as $$
+  select 10;
+$$;
+
+create or replace function public.fn_opt_log_bulk() returns trigger
+language plpgsql as $$
+declare
+  v_count integer;
+  v_label text;
+begin
+  if tg_op = 'DELETE' then
+    select count(*) into v_count from old_rows;
+  else
+    select count(*) into v_count from new_rows;
+  end if;
+
+  if v_count < public.fn_opt_log_bulk_threshold() then
+    return null;
+  end if;
+
+  v_label := case tg_table_name
+    when 'USERS'                  then 'Usuarios'
+    when 'USER_PERMISSIONS'       then 'Permisos de usuario'
+    when 'COMPANIES'              then 'Empresas'
+    when 'CLIENTS'                then 'Directores de proyecto'
+    when 'PROJECTS'               then 'Proyectos'
+    when 'PROJECT_ASSIGNMENTS'    then 'Asignaciones'
+    when 'ASSIGNMENT_RATE_CHANGES' then 'Cambios de tarifa'
+    when 'PROJECT_APPROVAL_STEPS' then 'Flujos de aprobación'
+    when 'HOLIDAYS'               then 'Días festivos'
+    when 'PAYROLL_COUNTRY_RULES'  then 'Reglas de nómina'
+    when 'TIMESHEETS'             then 'Timesheets'
+    when 'TIMESHEET_APPROVALS'    then 'Aprobaciones de timesheets'
+    when 'TIMESHEET_PAY'          then 'Pagos calculados'
+    when 'PAYMENT_BATCHES'        then 'Lotes de pago'
+    when 'PAYMENTS'               then 'Pagos'
+    when 'TIMESHEET_ATTACHMENTS'  then 'Evidencias de timesheets'
+    when 'APPROVAL_ATTACHMENTS'   then 'Evidencias de aprobaciones'
+    when 'APPROVAL_REQUESTS'      then 'Solicitudes de aprobación por correo'
+    else tg_table_name
+  end;
+
+  perform public.fn_opt_log_write(jsonb_build_object(
+    'category', 'DATA',
+    'action', 'BULK_CHANGE',
+    'entityType', 'TABLE',
+    'entityLabel', v_label,
+    'metadata', jsonb_build_object('table', tg_table_name, 'operation', tg_op, 'records', v_count)
+  ));
+
+  return null;
+end;
+$$;
+
+do $$
+declare
+  v_table text;
+begin
+  foreach v_table in array array[
+    'USERS', 'USER_PERMISSIONS', 'COMPANIES', 'CLIENTS', 'PROJECTS', 'PROJECT_ASSIGNMENTS',
+    'ASSIGNMENT_RATE_CHANGES', 'PROJECT_APPROVAL_STEPS', 'HOLIDAYS', 'PAYROLL_COUNTRY_RULES',
+    'TIMESHEETS', 'TIMESHEET_APPROVALS', 'TIMESHEET_PAY', 'PAYMENT_BATCHES', 'PAYMENTS',
+    'TIMESHEET_ATTACHMENTS', 'APPROVAL_ATTACHMENTS', 'APPROVAL_REQUESTS'
+  ]
+  loop
+    execute format('drop trigger if exists %I on public.%I', 'trg_' || v_table || '_bulk_ins', v_table);
+    execute format('drop trigger if exists %I on public.%I', 'trg_' || v_table || '_bulk_upd', v_table);
+    execute format('drop trigger if exists %I on public.%I', 'trg_' || v_table || '_bulk_del', v_table);
+    execute format(
+      'create trigger %I after insert on public.%I referencing new table as new_rows '
+      'for each statement execute function public.fn_opt_log_bulk()',
+      'trg_' || v_table || '_bulk_ins', v_table
+    );
+    execute format(
+      'create trigger %I after update on public.%I referencing old table as old_rows new table as new_rows '
+      'for each statement execute function public.fn_opt_log_bulk()',
+      'trg_' || v_table || '_bulk_upd', v_table
+    );
+    execute format(
+      'create trigger %I after delete on public.%I referencing old table as old_rows '
+      'for each statement execute function public.fn_opt_log_bulk()',
+      'trg_' || v_table || '_bulk_del', v_table
+    );
+  end loop;
 end;
 $$;

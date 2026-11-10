@@ -3,6 +3,7 @@ import { ApiError } from '../../utils/ApiError.js';
 import { buildPagination, created, ok, paginated } from '../../utils/httpResponse.js';
 import { validatedQuery } from '../../middlewares/validate.js';
 import { readEvidence } from '../../middlewares/upload.js';
+import { recordDataExport } from '../../utils/dataExports.js';
 import * as timesheetsService from './timesheets.service.js';
 import type { ExportedFile } from './timesheets.export.js';
 import type {
@@ -102,6 +103,11 @@ export async function getEvidence(req: Request, res: Response): Promise<void> {
     requireActor(req),
   );
 
+  await recordDataExport({
+    kind: 'TIMESHEET_EVIDENCE',
+    label: `Evidencia ${evidence.fileName} del timesheet #${Number(req.params.id)}`,
+    records: 1,
+  });
   ok(res, { evidence });
 }
 
@@ -130,5 +136,11 @@ export async function exportTimesheet(req: Request, res: Response): Promise<void
     requireActor(req),
   );
 
+  await recordDataExport({
+    kind: 'TIMESHEET',
+    label: `Timesheet ${file.fileName}`,
+    records: 1,
+    format: query.format,
+  });
   sendExportedFile(res, file);
 }

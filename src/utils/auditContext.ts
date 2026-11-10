@@ -21,6 +21,14 @@ export function currentAuditContext(): AuditContext | undefined {
   return storage.getStore();
 }
 
+export function forgetAuditIdentity(): void {
+  const context = storage.getStore();
+  if (!context) return;
+  context.actorId = null;
+  context.ip = null;
+  context.userAgent = null;
+}
+
 export function setAuditActor(actorId: number): void {
   const context = storage.getStore();
   if (context) context.actorId = actorId;

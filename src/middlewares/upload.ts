@@ -37,6 +37,69 @@ export function acceptEvidence(req: Request, res: Response, next: NextFunction):
   });
 }
 
+export const MAX_FEEDBACK_FILES = 3;
+
+const feedbackUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_EVIDENCE_BYTES, files: MAX_FEEDBACK_FILES },
+}).array('evidence', MAX_FEEDBACK_FILES);
+
+export function acceptFeedbackEvidence(req: Request, res: Response, next: NextFunction): void {
+  feedbackUpload(req, res, (error: unknown) => {
+    if (error instanceof multer.MulterError) {
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        next(
+          new ApiError(422, 'La evidencia excede los 10 MB', 'EVIDENCE_TOO_LARGE', {
+            max: MAX_EVIDENCE_BYTES,
+          }),
+        );
+        return;
+      }
+
+      if (error.code === 'LIMIT_FILE_COUNT' || error.code === 'LIMIT_UNEXPECTED_FILE') {
+        next(
+          new ApiError(422, 'Puedes adjuntar hasta 3 archivos', 'TOO_MANY_FILES', {
+            max: MAX_FEEDBACK_FILES,
+          }),
+        );
+        return;
+      }
+
+      next(ApiError.badRequest('No fue posible leer el archivo adjunto'));
+      return;
+    }
+
+    if (error) {
+      next(error);
+      return;
+    }
+
+    next();
+  });
+}
+
+export function readFeedbackEvidence(req: Request): UploadedEvidence[] {
+  const files = Array.isArray(req.files) ? req.files : [];
+
+  return files.map((file) => {
+    if (!ALLOWED_EVIDENCE_TYPES.includes(file.mimetype)) {
+      throw new ApiError(
+        422,
+        'La evidencia debe ser PDF, PNG, JPG o WEBP',
+        'EVIDENCE_TYPE_NOT_ALLOWED',
+        { mimeType: file.mimetype, allowed: ALLOWED_EVIDENCE_TYPES },
+      );
+    }
+
+    return {
+      originalName: '',
+      mimeType: file.mimetype,
+      size: file.size,
+      buffer: file.buffer,
+    };
+  });
+}
+
 export function readEvidence(req: Request): UploadedEvidence | null {
   const file = req.file;
   if (!file) return null;

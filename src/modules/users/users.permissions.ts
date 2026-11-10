@@ -3,6 +3,7 @@ import {
   defaultPermissionsFor,
   hasFixedPermissions,
   PERMISSION_CODES,
+  PERMISSION_FEEDBACK_REVIEW,
   type PermissionCode,
 } from '../../utils/permissions.js';
 import {
@@ -58,12 +59,32 @@ export function grantableRolesFor(actorRoleCode: string): string[] | 'ALL' {
   return [...DELEGATED_GRANTABLE_ROLES];
 }
 
+const MANAGER_GRANTABLE_PERMISSIONS: readonly PermissionCode[] = [PERMISSION_FEEDBACK_REVIEW];
+
 export function grantablePermissionsFor(
   actorRoleCode: string,
   actorPermissions: readonly string[],
 ): PermissionCode[] {
   if (actorRoleCode === ROLE_ADMIN) return [...PERMISSION_CODES];
-  return PERMISSION_CODES.filter((code) => actorPermissions.includes(code));
+  return PERMISSION_CODES.filter(
+    (code) =>
+      actorPermissions.includes(code) ||
+      (actorRoleCode === ROLE_MANAGER && MANAGER_GRANTABLE_PERMISSIONS.includes(code)),
+  );
+}
+
+export function canChangeOwnPermissions(
+  actorRoleCode: string,
+  current: readonly string[],
+  next: readonly string[],
+): boolean {
+  if (actorRoleCode !== ROLE_MANAGER) return false;
+
+  const changed = [
+    ...current.filter((code) => !next.includes(code)),
+    ...next.filter((code) => !current.includes(code)),
+  ];
+  return changed.length > 0 && changed.every((code) => code === PERMISSION_FEEDBACK_REVIEW);
 }
 
 export type PermissionResolution =
