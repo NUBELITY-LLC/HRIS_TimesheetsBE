@@ -81,6 +81,9 @@ create unique index if not exists "idx_COMPANIES_lower_legal_name"
   on public."COMPANIES" (lower(legal_name));
 create index if not exists "idx_COMPANIES_is_active" on public."COMPANIES" (is_active);
 
+alter table public."COMPANIES"
+  add column if not exists allowed_email_domains text[] not null default '{}';
+
 create table if not exists public."CLIENTS" (
   id            bigint generated always as identity primary key,
   company_id    bigint       not null references public."COMPANIES"(id),

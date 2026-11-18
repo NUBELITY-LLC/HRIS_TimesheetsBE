@@ -1,5 +1,6 @@
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
+import { isEmailAllowed } from '../../utils/emailDomains.js';
 import * as companiesRepository from './companies.repository.js';
 import type { CompanyPatch, CompanyRecord, SortColumn } from './companies.repository.js';
 import type {
@@ -16,6 +17,7 @@ export type CompanyView = {
   tradeName: string;
   rfc: string | null;
   isActive: boolean;
+  allowedEmailDomains: string[];
 };
 
 const SORT_COLUMNS: Record<ListCompaniesQuery['sortBy'], SortColumn> = {
@@ -31,7 +33,23 @@ export function toCompanyView(record: CompanyRecord): CompanyView {
     tradeName: record.trade_name,
     rfc: record.rfc,
     isActive: record.is_active,
+    allowedEmailDomains: record.allowed_email_domains ?? [],
   };
+}
+
+export function assertEmailAllowed(
+  email: string | null | undefined,
+  company: { trade_name: string; allowed_email_domains: string[] | null },
+  field: string,
+): void {
+  const domains = company.allowed_email_domains ?? [];
+
+  if (!email || isEmailAllowed(email, domains)) return;
+
+  throw ApiError.unprocessable(
+    `El correo debe pertenecer a ${domains.length === 1 ? 'el dominio' : 'uno de los dominios'} de ${company.trade_name}: ${domains.join(', ')}`,
+    { field, code: 'EMAIL_DOMAIN_NOT_ALLOWED', allowedDomains: domains },
+  );
 }
 
 export async function resolveCompany(companyId: number): Promise<CompanyRecord> {
@@ -57,6 +75,7 @@ export async function createCompany(
     trade_name: input.tradeName,
     rfc: input.rfc ?? null,
     is_active: input.isActive ?? true,
+    allowed_email_domains: input.allowedEmailDomains ?? [],
   });
 
   logger.info({ companyId: created.id, createdBy: actor.id }, 'Empresa creada');
@@ -106,6 +125,10 @@ export async function updateCompany(
   if (input.tradeName !== undefined) patch.trade_name = input.tradeName;
   if (input.rfc !== undefined) patch.rfc = input.rfc;
   if (input.isActive !== undefined) patch.is_active = input.isActive;
+  if (input.allowedEmailDomains !== undefined) {
+    await assertClientsMatchDomains(id, input.allowedEmailDomains);
+    patch.allowed_email_domains = input.allowedEmailDomains;
+  }
 
   const updated = await companiesRepository.updateCompany(id, patch);
 
@@ -119,6 +142,44 @@ export async function updateCompany(
   );
 
   return toCompanyView(updated);
+}
+
+async function assertClientsMatchDomains(companyId: number, domains: string[]): Promise<void> {
+  if (domains.length === 0) return;
+
+  const outside = (await companiesRepository.findActiveClientEmails(companyId)).filter(
+    (client) => !isEmailAllowed(client.email, domains),
+  );
+
+  const outsideUsers = (await companiesRepository.findActiveConsultantEmails(companyId)).filter(
+    (user) => !isEmailAllowed(user.email, domains),
+  );
+
+  if (outsideUsers.length > 0) {
+    throw ApiError.unprocessable(
+      `Hay colaboradores asignados a proyectos de esta empresa con correo fuera de los dominios indicados: ${outsideUsers
+        .map((user) => `${user.fullName} (${user.email})`)
+        .join(', ')}`,
+      {
+        field: 'allowedEmailDomains',
+        code: 'CONSULTANT_EMAIL_OUTSIDE_DOMAINS',
+        users: outsideUsers,
+      },
+    );
+  }
+
+  if (outside.length === 0) return;
+
+  throw ApiError.unprocessable(
+    `Hay gerentes con correo fuera de los dominios indicados: ${outside
+      .map((client) => `${client.clientName} (${client.email})`)
+      .join(', ')}`,
+    {
+      field: 'allowedEmailDomains',
+      code: 'CLIENT_EMAIL_OUTSIDE_DOMAINS',
+      clients: outside,
+    },
+  );
 }
 
 export async function deactivateCompany(id: number, actor: Actor): Promise<CompanyView> {

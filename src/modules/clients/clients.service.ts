@@ -1,6 +1,6 @@
 import { logger } from '../../config/logger.js';
 import { ApiError } from '../../utils/ApiError.js';
-import { resolveCompany } from '../companies/companies.service.js';
+import { assertEmailAllowed, resolveCompany } from '../companies/companies.service.js';
 import type { CompanyView } from '../companies/companies.service.js';
 import { PERMISSION_TIMESHEETS_APPROVE } from '../../utils/permissions.js';
 import { CLIENT_MANAGER_ROLES } from '../../utils/roles.js';
@@ -41,6 +41,7 @@ function toClientView(record: ClientRecord): ClientView {
           tradeName: record.company.trade_name,
           rfc: record.company.rfc,
           isActive: record.company.is_active,
+          allowedEmailDomains: record.company.allowed_email_domains ?? [],
         }
       : null,
   };
@@ -65,8 +66,9 @@ async function resolveClientUser(userId: number): Promise<projectsRepository.Use
 }
 
 export async function createClient(input: CreateClientInput, actor: Actor): Promise<ClientView> {
-  await resolveCompany(input.companyId);
+  const company = await resolveCompany(input.companyId);
   const user = input.userId ? await resolveClientUser(input.userId) : null;
+  assertEmailAllowed(user?.email ?? input.contactEmail, company, user ? 'userId' : 'contactEmail');
 
   const created = await clientsRepository.insertClient({
     company_id: input.companyId,
@@ -119,9 +121,10 @@ export async function updateClient(
   }
 
   const patch: ClientPatch = {};
+  let company = target.company;
 
   if (input.companyId !== undefined) {
-    await resolveCompany(input.companyId);
+    company = await resolveCompany(input.companyId);
     patch.company_id = input.companyId;
   }
   if (input.clientName !== undefined) patch.client_name = input.clientName;
@@ -131,6 +134,14 @@ export async function updateClient(
     const user = input.userId ? await resolveClientUser(input.userId) : null;
     patch.user_id = user?.id ?? null;
     if (user) patch.contact_email = user.email.toLowerCase();
+  }
+
+  if (company) {
+    const linkedEmail =
+      input.userId !== undefined ? (patch.user_id ? patch.contact_email : null) : target.user?.email;
+    const email =
+      linkedEmail ?? (patch.contact_email !== undefined ? patch.contact_email : target.contact_email);
+    assertEmailAllowed(email, company, linkedEmail ? 'userId' : 'contactEmail');
   }
 
   const updated = await clientsRepository.updateClient(id, patch);

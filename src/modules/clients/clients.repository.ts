@@ -8,6 +8,7 @@ export type CompanyRef = {
   trade_name: string;
   rfc: string | null;
   is_active: boolean;
+  allowed_email_domains: string[];
 };
 
 export type ClientRecord = {
@@ -51,7 +52,7 @@ export type ListClientsFilters = {
 
 const CLIENT_COLUMNS =
   'id, company_id, client_name, contact_email, user_id, is_active, ' +
-  'company:COMPANIES!inner(id, legal_name, trade_name, rfc, is_active), ' +
+  'company:COMPANIES!inner(id, legal_name, trade_name, rfc, is_active, allowed_email_domains), ' +
   'user:USERS(id, full_name, email)';
 
 const UNIQUE_VIOLATION = '23505';

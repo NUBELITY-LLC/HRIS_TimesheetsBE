@@ -380,6 +380,39 @@ export async function findAssignmentsByProject(projectId: number): Promise<Assig
   return (data ?? []) as unknown as AssignmentRecord[];
 }
 
+export type ProjectCompanyDomains = {
+  id: number;
+  project_name: string;
+  client: { company: { trade_name: string; allowed_email_domains: string[] } | null } | null;
+};
+
+export async function findProjectsCompanyDomains(
+  projectIds: number[],
+): Promise<ProjectCompanyDomains[]> {
+  const { data, error } = await supabase
+    .from('PROJECTS')
+    .select(
+      'id, project_name, client:CLIENTS!inner(company:COMPANIES!inner(trade_name, allowed_email_domains))',
+    )
+    .in('id', projectIds);
+
+  if (error) fail('findProjectsCompanyDomains', error);
+
+  return (data ?? []) as unknown as ProjectCompanyDomains[];
+}
+
+export async function findActiveProjectIdsByConsultant(consultantId: number): Promise<number[]> {
+  const { data, error } = await supabase
+    .from('PROJECT_ASSIGNMENTS')
+    .select('project_id')
+    .eq('consultant_id', consultantId)
+    .eq('is_active', true);
+
+  if (error) fail('findActiveProjectIdsByConsultant', error);
+
+  return ((data ?? []) as { project_id: number }[]).map((row) => row.project_id);
+}
+
 export async function findAssignmentsByConsultant(
   consultantId: number,
 ): Promise<ConsultantAssignmentRecord[]> {

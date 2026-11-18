@@ -987,9 +987,13 @@ const APPROVAL_STATUS_LABELS: Record<string, string> = {
   REJECTED_TO_CONSULTANT: 'Returned',
 };
 
+function wallClock(timestamp: string): string {
+  const utc = /(z|[+-]\d{2}(:?\d{2})?)$/i.test(timestamp) ? timestamp : `${timestamp}Z`;
+  return zonedWallClock(new Date(utc)).toISOString().slice(0, 16);
+}
+
 function approvalDate(decidedAt: string): string {
-  const utc = /(z|[+-]\d{2}(:?\d{2})?)$/i.test(decidedAt) ? decidedAt : `${decidedAt}Z`;
-  return zonedWallClock(new Date(utc)).toISOString().slice(0, 10);
+  return wallClock(decidedAt).slice(0, 10);
 }
 
 function toActivityLogApproval(step: ApprovalStepView): ActivityLogApproval {
@@ -1027,7 +1031,7 @@ export async function exportTimesheetById(
     throw ApiError.notFound('La asignacion del timesheet no existe');
   }
 
-  const [dayGroups, approvals, holidays] = await Promise.all([
+  const [dayGroups, approvals, holidays, submission] = await Promise.all([
     Promise.all((costs?.timesheetIds ?? [record.id]).map((id) => repository.findDays(id))),
     repository.findApprovals(record.id, record.cycle_no),
     repository.findHolidaysInRange({
@@ -1035,8 +1039,11 @@ export async function exportTimesheetById(
       from: costs?.periodStart ?? record.week_start_date,
       to: costs?.periodEnd ?? record.week_end_date,
     }),
+    repository.findLastSubmission(record.id, record.cycle_no),
   ]);
   const days = dayGroups.flat();
+  const submittedAt = submission?.occurred_at ?? record.submitted_at;
+  const submitter = submission?.actor ?? assignment.consultant;
   const daysByDate = new Map(days.map((day) => [day.work_date, day]));
   const holidayNames = new Map(holidays.map((holiday) => [holiday.holiday_date, holiday.name]));
 
@@ -1057,6 +1064,14 @@ export async function exportTimesheetById(
       consultantName: assignment.consultant?.full_name ?? '',
       assignmentCode: assignment.assignment_code?.trim() || null,
       projectName: assignment.project?.project_name ?? '',
+      submission: submittedAt
+        ? {
+            name: submitter?.full_name ?? '',
+            email: submitter?.email ?? '',
+            code: record.submission_code,
+            submittedAt: wallClock(submittedAt),
+          }
+        : null,
       dailyHours: Number(assignment.daily_hours),
       periodStart: costs?.periodStart ?? record.week_start_date,
       periodEnd: costs?.periodEnd ?? record.week_end_date,

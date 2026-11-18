@@ -312,6 +312,11 @@ export async function createUser(
 
   const permissions = permissionsFor(role.code, input.permissions, actor);
   const assignments = await resolveAssignments(input.projects ?? []);
+  await projectsService.assertEmailFitsProjects(
+    input.email,
+    assignments.map((assignment) => assignment.projectId),
+    'email',
+  );
 
   const created = await usersRepository.insertUser(
     {
@@ -490,6 +495,14 @@ export async function updateUser(
   if (input.userName !== undefined) patch.user_name = input.userName;
   if (input.email !== undefined) patch.email = input.email;
   if (input.jobTitle !== undefined) patch.job_title = input.jobTitle;
+
+  if (patch.email !== undefined && patch.email !== target.email) {
+    await projectsService.assertEmailFitsProjects(
+      patch.email,
+      await projectsRepository.findActiveProjectIdsByConsultant(id),
+      'email',
+    );
+  }
 
   if (Object.keys(patch).length) {
     const updated = await usersRepository.updateUser(id, patch);

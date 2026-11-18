@@ -91,6 +91,7 @@ type CompaniesRow = {
   trade_name: string;
   rfc: string | null;
   is_active: boolean;
+  allowed_email_domains: string[];
 };
 
 type ClientsRow = {
@@ -430,7 +431,7 @@ export type Database = {
       };
       COMPANIES: {
         Row: CompaniesRow;
-        Insert: InsertOf<CompaniesRow, 'rfc' | 'is_active'>;
+        Insert: InsertOf<CompaniesRow, 'rfc' | 'is_active' | 'allowed_email_domains'>;
         Update: Partial<CompaniesRow>;
         Relationships: [];
       };

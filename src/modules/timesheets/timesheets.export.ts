@@ -28,11 +28,19 @@ export type ActivityLogApproval = {
   comments: string | null;
 };
 
+export type ActivityLogSubmission = {
+  name: string;
+  email: string;
+  code: string | null;
+  submittedAt: string;
+};
+
 export type ActivityLog = {
   code: string;
   consultantName: string;
   assignmentCode: string | null;
   projectName: string;
+  submission?: ActivityLogSubmission | null;
   dailyHours: number;
   periodStart: string;
   periodEnd: string;
@@ -115,6 +123,10 @@ const SUMMARY_KEYS: ColumnKey[] = [
   'activity',
   'notes',
 ];
+
+const SUBMISSION_TITLE = 'SUBMITTED BY';
+
+const SUBMISSION_TIME_ZONE = 'Mexico City time';
 
 const APPROVAL_HEADERS = ['Step', 'Approver', 'Status', 'Approved on', 'Comments'];
 
@@ -248,6 +260,27 @@ function approvalValues(step: ActivityLogApproval): string[] {
   ];
 }
 
+function submissionDate(submission: ActivityLogSubmission): string {
+  return displayDate(submission.submittedAt.slice(0, 10));
+}
+
+function submissionTime(submission: ActivityLogSubmission): string {
+  const [hour, minute] = submission.submittedAt.slice(11, 16).split(':').map(Number);
+  const suffix = hour! < 12 ? 'AM' : 'PM';
+  const hour12 = hour! % 12 || 12;
+  return `${String(hour12).padStart(2, '0')}:${String(minute).padStart(2, '0')} ${suffix} (${SUBMISSION_TIME_ZONE})`;
+}
+
+function submissionInfo(submission: ActivityLogSubmission): [string, string][] {
+  return [
+    ['Submitted by', submission.name],
+    ['Email', submission.email],
+    ['Submission date', submissionDate(submission)],
+    ['Submission time', submissionTime(submission)],
+    ...(submission.code ? ([['Submission ID', submission.code]] as [string, string][]) : []),
+  ];
+}
+
 function hoursLabel(log: ActivityLog): string {
   return log.costs ? 'Period hours' : 'Hours worked';
 }
@@ -298,7 +331,45 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   title.alignment = { horizontal: 'center', vertical: 'top', wrapText: true };
   sheet.getRow(1).height = 21;
 
-  const project = sheet.getRow(2);
+  const bandRow = (rowNumber: number, text: string) => {
+    sheet.mergeCells(`A${rowNumber}:${layout.lastColumn}${rowNumber}`);
+    const band = sheet.getCell(`A${rowNumber}`);
+    band.value = text;
+    band.font = whiteBold;
+    band.fill = fill(COLORS.period);
+    band.alignment = wrapTop;
+    band.border = rule;
+  };
+
+  let nextRow = 2;
+
+  if (log.submission) {
+    bandRow(nextRow, SUBMISSION_TITLE);
+    nextRow += 1;
+
+    const pairs = submissionInfo(log.submission);
+    for (let index = 0; index < pairs.length; index += 2) {
+      const row = sheet.getRow(nextRow);
+      styleRow(row);
+      const [leftLabel, leftValue] = pairs[index]!;
+      row.getCell(1).value = leftLabel;
+      row.getCell(1).font = { bold: true };
+      row.getCell(2).value = leftValue;
+      const right = pairs[index + 1];
+      if (right) {
+        row.getCell(4).value = right[0];
+        row.getCell(4).font = { bold: true };
+        row.getCell(5).value = right[1];
+        sheet.mergeCells(`E${nextRow}:${layout.lastColumn}${nextRow}`);
+      }
+      nextRow += 1;
+    }
+
+    styleRow(sheet.getRow(nextRow));
+    nextRow += 1;
+  }
+
+  const project = sheet.getRow(nextRow);
   styleRow(project);
   project.getCell(1).value = 'Project';
   project.getCell(2).value = log.projectName;
@@ -307,13 +378,13 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   project.getCell(1).font = { bold: true };
   project.getCell(4).font = { bold: true };
 
-  const workday = sheet.getRow(3);
+  const workday = sheet.getRow(nextRow + 1);
   styleRow(workday);
   workday.getCell(1).value = 'Schedule';
   workday.getCell(2).value = workdayLabel(log);
   workday.getCell(1).font = { bold: true };
 
-  let nextRow = 4;
+  nextRow += 2;
 
   if (log.costs) {
     const costs = sheet.getRow(nextRow);
@@ -323,7 +394,7 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
     workday.getCell(4).value = 'Hourly rate';
     workday.getCell(4).font = { bold: true };
     if (log.costs.rates.length > 1) {
-      sheet.mergeCells(`E3:${layout.lastColumn}3`);
+      sheet.mergeCells(`E${workday.number}:${layout.lastColumn}${workday.number}`);
       workday.getCell(5).value = ratesLabel(log.costs);
     } else {
       workday.getCell(5).value = log.costs.rates[0]?.hourlyRate ?? 0;
@@ -337,13 +408,7 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
 
   if (log.approvals.length) {
     nextRow += 1;
-    sheet.mergeCells(`A${nextRow}:${layout.lastColumn}${nextRow}`);
-    const band = sheet.getCell(`A${nextRow}`);
-    band.value = approvalsTitle(log);
-    band.font = whiteBold;
-    band.fill = fill(COLORS.period);
-    band.alignment = wrapTop;
-    band.border = rule;
+    bandRow(nextRow, approvalsTitle(log));
     nextRow += 1;
 
     const spans: [number, number][] = [
@@ -391,13 +456,7 @@ async function renderXlsx(log: ActivityLog): Promise<Buffer> {
   const headerRow = periodRow + 1;
   sheet.pageSetup.printTitlesRow = `${periodRow}:${headerRow}`;
 
-  sheet.mergeCells(`A${periodRow}:${layout.lastColumn}${periodRow}`);
-  const period = sheet.getCell(`A${periodRow}`);
-  period.value = periodTitle(log);
-  period.font = whiteBold;
-  period.fill = fill(COLORS.period);
-  period.alignment = wrapTop;
-  period.border = rule;
+  bandRow(periodRow, periodTitle(log));
 
   const header = sheet.getRow(headerRow);
   layout.columns.forEach((column, index) => {
@@ -567,11 +626,29 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
         ),
       );
 
+    const infoRows = (pairs: [string, string][]) => {
+      doc.fillColor(`#${COLORS.ink}`).fontSize(9);
+      for (const [label, value] of pairs) {
+        const y = doc.y;
+        doc.font('Helvetica-Bold').text(label, left, y, { width: 120 });
+        doc.font('Helvetica').text(value, left + 130, y, { width: width - 130 });
+        doc.y = Math.max(doc.y, y + 12) + 2;
+        rule(doc.y);
+        doc.y += 4;
+      }
+    };
+
     band(`${layout.title} — ${log.code}`, COLORS.title, 14, 'center');
     doc.moveDown(0.6);
 
-    doc.fillColor(`#${COLORS.ink}`).fontSize(9);
-    const info: [string, string][] = [
+    if (log.submission) {
+      band(SUBMISSION_TITLE, COLORS.period, 10, 'left');
+      doc.moveDown(0.3);
+      infoRows(submissionInfo(log.submission));
+      doc.moveDown(0.6);
+    }
+
+    infoRows([
       ['Project', log.projectName],
       [hoursLabel(log), String(hoursValue(log))],
       ['Schedule', workdayLabel(log)],
@@ -581,15 +658,7 @@ function renderPdf(log: ActivityLog): Promise<Buffer> {
             ['Total amount', formatAmount(log.costs.amount, log.costs.currency)],
           ] as [string, string][])
         : []),
-    ];
-    for (const [label, value] of info) {
-      const y = doc.y;
-      doc.font('Helvetica-Bold').text(label, left, y, { width: 120 });
-      doc.font('Helvetica').text(value, left + 130, y, { width: width - 130 });
-      doc.y = Math.max(doc.y, y + 12) + 2;
-      rule(doc.y);
-      doc.y += 4;
-    }
+    ]);
 
     if (log.approvals.length) {
       const fixedApproval = APPROVAL_PDF_WIDTHS.reduce((sum, value) => sum + value, 0);

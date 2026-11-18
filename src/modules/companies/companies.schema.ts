@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  MAX_EMAIL_DOMAINS,
+  isValidEmailDomain,
+  normalizeEmailDomain,
+} from '../../utils/emailDomains.js';
 
 const legalName = z
   .string({ message: 'La razon social es obligatoria' })
@@ -22,11 +27,22 @@ const rfc = z
   )
   .refine((value) => /^[A-ZÑ&0-9]+$/.test(value), 'El RFC solo admite letras y numeros');
 
+const allowedEmailDomains = z
+  .array(
+    z
+      .string({ message: 'El dominio no es valido' })
+      .transform(normalizeEmailDomain)
+      .refine(isValidEmailDomain, { message: 'El dominio no es valido, usa un formato como empresa.com' }),
+  )
+  .max(MAX_EMAIL_DOMAINS, `Puedes registrar hasta ${MAX_EMAIL_DOMAINS} dominios`)
+  .transform((domains) => [...new Set(domains)]);
+
 export const createCompanySchema = z.object({
   legalName,
   tradeName,
   rfc: rfc.nullish(),
   isActive: z.boolean().optional(),
+  allowedEmailDomains: allowedEmailDomains.optional(),
 });
 
 export const updateCompanySchema = z
@@ -35,6 +51,7 @@ export const updateCompanySchema = z
     tradeName: tradeName.optional(),
     rfc: rfc.nullish(),
     isActive: z.boolean().optional(),
+    allowedEmailDomains: allowedEmailDomains.optional(),
   })
   .refine((value) => Object.values(value).some((field) => field !== undefined), {
     message: 'Envia al menos un campo para actualizar',
