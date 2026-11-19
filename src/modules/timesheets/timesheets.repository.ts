@@ -542,7 +542,7 @@ export type ExportAssignmentRecord = {
   country_code: string;
   hours_divisor: number;
   daily_hours: number;
-  consultant: { full_name: string } | null;
+  consultant: { full_name: string; email: string } | null;
   project: { project_name: string } | null;
 };
 
@@ -553,7 +553,7 @@ export async function findExportAssignment(
     .from('PROJECT_ASSIGNMENTS')
     .select(
       'start_date, assignment_code, country_code, hours_divisor, daily_hours, ' +
-        'consultant:USERS!inner(full_name), project:PROJECTS!inner(project_name)',
+        'consultant:USERS!inner(full_name, email), project:PROJECTS!inner(project_name)',
     )
     .eq('id', assignmentId)
     .maybeSingle();
@@ -561,6 +561,30 @@ export async function findExportAssignment(
   if (error) fail('findExportAssignment', error);
 
   return (data as unknown as ExportAssignmentRecord | null) ?? null;
+}
+
+export type SubmissionEventRecord = {
+  occurred_at: string;
+  actor: { full_name: string; email: string } | null;
+};
+
+export async function findLastSubmission(
+  timesheetId: number,
+  cycleNo: number,
+): Promise<SubmissionEventRecord | null> {
+  const { data, error } = await supabase
+    .from('TIMESHEET_EVENTS')
+    .select('occurred_at, actor:USERS(full_name, email)')
+    .eq('timesheet_id', timesheetId)
+    .eq('cycle_no', cycleNo)
+    .eq('event_type', 'SUBMITTED')
+    .order('occurred_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) fail('findLastSubmission', error);
+
+  return (data as unknown as SubmissionEventRecord | null) ?? null;
 }
 
 export async function findAssignmentTimesheetIdsInRange(params: {

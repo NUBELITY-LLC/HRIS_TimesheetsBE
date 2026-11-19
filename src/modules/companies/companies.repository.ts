@@ -8,6 +8,7 @@ export type CompanyRecord = {
   trade_name: string;
   rfc: string | null;
   is_active: boolean;
+  allowed_email_domains: string[];
 };
 
 export type NewCompanyRow = {
@@ -15,6 +16,7 @@ export type NewCompanyRow = {
   trade_name: string;
   rfc: string | null;
   is_active: boolean;
+  allowed_email_domains: string[];
 };
 
 export type CompanyPatch = Partial<NewCompanyRow>;
@@ -30,7 +32,7 @@ export type ListCompaniesFilters = {
   ascending: boolean;
 };
 
-const COMPANY_COLUMNS = 'id, legal_name, trade_name, rfc, is_active';
+const COMPANY_COLUMNS = 'id, legal_name, trade_name, rfc, is_active, allowed_email_domains';
 
 const UNIQUE_VIOLATION = '23505';
 
@@ -112,6 +114,58 @@ export async function findCompanies(
   if (error) fail('findCompanies', error);
 
   return { rows: (data ?? []) as CompanyRecord[], total: count ?? 0 };
+}
+
+export async function findActiveClientEmails(
+  companyId: number,
+): Promise<{ id: number; clientName: string; email: string }[]> {
+  const { data, error } = await supabase
+    .from('CLIENTS')
+    .select('id, client_name, contact_email, user:USERS(email)')
+    .eq('company_id', companyId)
+    .eq('is_active', true);
+
+  if (error) fail('findActiveClientEmails', error);
+
+  return ((data ?? []) as unknown as {
+    id: number;
+    client_name: string;
+    contact_email: string | null;
+    user: { email: string } | null;
+  }[]).flatMap((row) => {
+    const email = row.user?.email ?? row.contact_email;
+    return email ? [{ id: row.id, clientName: row.client_name, email: email.toLowerCase() }] : [];
+  });
+}
+
+export async function findActiveConsultantEmails(
+  companyId: number,
+): Promise<{ id: number; fullName: string; email: string }[]> {
+  const { data, error } = await supabase
+    .from('PROJECT_ASSIGNMENTS')
+    .select(
+      'consultant:USERS!inner(id, full_name, email), ' +
+        'project:PROJECTS!inner(client:CLIENTS!inner(company_id))',
+    )
+    .eq('is_active', true)
+    .eq('project.client.company_id', companyId);
+
+  if (error) fail('findActiveConsultantEmails', error);
+
+  const consultants = new Map<number, { id: number; fullName: string; email: string }>();
+  for (const row of (data ?? []) as unknown as {
+    consultant: { id: number; full_name: string; email: string } | null;
+  }[]) {
+    if (row.consultant) {
+      consultants.set(row.consultant.id, {
+        id: row.consultant.id,
+        fullName: row.consultant.full_name,
+        email: row.consultant.email.toLowerCase(),
+      });
+    }
+  }
+
+  return [...consultants.values()];
 }
 
 export async function updateCompany(

@@ -5,6 +5,7 @@ import { PERMISSION_TIMESHEETS_APPROVE } from '../../utils/permissions.js';
 import { ASSIGNABLE_ROLES, PROJECT_MANAGER_ROLES } from '../../utils/roles.js';
 import { PROJECT_STATUS_CLOSED, type ProjectStatus } from '../../utils/projects.js';
 import * as clientsRepository from '../clients/clients.repository.js';
+import { assertEmailAllowed } from '../companies/companies.service.js';
 import { ratePeriodOf, toPayTermsView, type PayTermsView } from '../payroll/pay.service.js';
 import * as payRepository from '../payroll/pay.repository.js';
 import {
@@ -402,6 +403,21 @@ async function resolveConsultant(consultantId: number): Promise<UserRef> {
   return consultant;
 }
 
+export async function assertEmailFitsProjects(
+  email: string,
+  projectIds: number[],
+  field: string,
+): Promise<void> {
+  if (projectIds.length === 0) return;
+
+  const projects = await repository.findProjectsCompanyDomains([...new Set(projectIds)]);
+
+  for (const project of projects) {
+    const company = project.client?.company;
+    if (company) assertEmailAllowed(email, company, field);
+  }
+}
+
 export function assertWithinProject(
   project: ProjectRecord,
   startDate: string,
@@ -442,7 +458,8 @@ export async function assignConsultant(
     );
   }
 
-  await resolveConsultant(input.consultantId);
+  const consultant = await resolveConsultant(input.consultantId);
+  await assertEmailFitsProjects(consultant.email, [projectId], 'consultantId');
 
   const endDate = input.endDate ?? project.end_date ?? null;
   assertWithinProject(project, input.startDate, endDate);
@@ -528,6 +545,11 @@ export async function updateAssignment(
   }
 
   assertWithinProject(project, startDate, endDate);
+
+  if (patch.is_active && !target.is_active) {
+    const consultant = await repository.findUserById(target.consultant_id);
+    if (consultant) await assertEmailFitsProjects(consultant.email, [projectId], 'isActive');
+  }
 
   const updated = await repository.updateAssignment(assignmentId, patch);
 
