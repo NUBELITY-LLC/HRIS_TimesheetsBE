@@ -199,6 +199,7 @@ type TimesheetDaysRow = {
   work_date: string;
   total_hours: number;
   note: string | null;
+  holiday_worked: boolean;
 };
 
 type TimesheetActivitiesRow = {
@@ -524,7 +525,7 @@ export type Database = {
       };
       TIMESHEET_DAYS: {
         Row: TimesheetDaysRow;
-        Insert: InsertOf<TimesheetDaysRow, 'total_hours' | 'note'>;
+        Insert: InsertOf<TimesheetDaysRow, 'total_hours' | 'note' | 'holiday_worked'>;
         Update: Partial<TimesheetDaysRow>;
         Relationships: [ForeignKey<'timesheet_id', 'TIMESHEETS'>];
       };

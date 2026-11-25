@@ -28,6 +28,7 @@ export type AssignmentRecord = {
   start_date: string;
   end_date: string | null;
   assignment_code: string | null;
+  country_code: string;
   project: ProjectRef | null;
 };
 
@@ -60,6 +61,7 @@ export type DayRecord = {
   work_date: string;
   total_hours: number;
   note: string | null;
+  holiday_worked: boolean;
   activities: ActivityRecord[];
 };
 
@@ -89,7 +91,7 @@ export type ListTimesheetsFilters = {
 };
 
 const ASSIGNMENT_COLUMNS =
-  'id, consultant_id, is_active, start_date, end_date, assignment_code, ' +
+  'id, consultant_id, is_active, start_date, end_date, assignment_code, country_code, ' +
   'project:PROJECTS!inner(id, project_name, code, end_date, status, ' +
   'client:CLIENTS!inner(id, client_name, company:COMPANIES!inner(id, trade_name)))';
 
@@ -170,7 +172,7 @@ export async function findTimesheetByWeek(
 export async function findDays(timesheetId: number): Promise<DayRecord[]> {
   const { data, error } = await supabase
     .from('TIMESHEET_DAYS')
-    .select('id, work_date, total_hours, note, activities:TIMESHEET_ACTIVITIES(id, line_no, hours, activity)')
+    .select('id, work_date, total_hours, note, holiday_worked, activities:TIMESHEET_ACTIVITIES(id, line_no, hours, activity)')
     .eq('timesheet_id', timesheetId)
     .order('work_date', { ascending: true })
     .order('line_no', { referencedTable: 'TIMESHEET_ACTIVITIES', ascending: true });
@@ -301,6 +303,7 @@ export function countSettledTimesheets(consultantId: number): Promise<number> {
 export type DraftDayPayload = {
   workDate: string;
   note: string | null;
+  holidayWorked: boolean;
   activities: Array<{ hours: number; activity: string }>;
 };
 

@@ -40,6 +40,7 @@ const activitySchema = z.object({
 const daySchema = z.object({
   date: isoDate,
   note: z.string().trim().max(500, 'La nota excede los 500 caracteres').nullish(),
+  holidayWorked: z.boolean({ message: 'El indicador de dia feriado debe ser booleano' }).default(false),
   activities: z
     .array(activitySchema)
     .max(20, 'Como maximo 20 actividades por dia')

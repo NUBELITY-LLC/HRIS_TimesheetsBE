@@ -4,7 +4,14 @@ export type ContractType = (typeof CONTRACT_TYPES)[number];
 import type { CountryCode } from '../../utils/countries.js';
 import type { RatePeriod } from '../../utils/assignments.js';
 
-export const PAY_BUCKETS = ['REGULAR', 'SUNDAY', 'OVERTIME', 'OVERTIME_TRIPLE', 'HOLIDAY'] as const;
+export const PAY_BUCKETS = [
+  'REGULAR',
+  'SUNDAY',
+  'OVERTIME',
+  'OVERTIME_TRIPLE',
+  'HOLIDAY',
+  'HOLIDAY_REST',
+] as const;
 export type PayBucket = (typeof PAY_BUCKETS)[number];
 
 export const DEFAULT_PAY_TERMS = {
@@ -50,7 +57,7 @@ export type PayTerms = {
   holidayMultiplier: number;
 };
 
-export type PayDayInput = { date: string; minutes: number };
+export type PayDayInput = { date: string; minutes: number; holidayWorked?: boolean };
 
 export type PayLine = {
   bucket: PayBucket;
@@ -126,20 +133,18 @@ export function hourlyRateFor(
   return Number((terms.payRate / divisor).toFixed(4));
 }
 
+function holidayPortions(day: PayDayInput, multiplier: number): Portion[] {
+  return day.holidayWorked
+    ? [{ bucket: 'HOLIDAY', minutes: day.minutes, multiplier }]
+    : [{ bucket: 'HOLIDAY_REST', minutes: day.minutes, multiplier: 1 }];
+}
+
 function contractorPortions(
   day: PayDayInput,
   terms: PayTerms,
   holidays: ReadonlySet<string>,
 ): Portion[] {
-  if (holidays.has(day.date)) {
-    return [
-      {
-        bucket: 'HOLIDAY',
-        minutes: day.minutes,
-        multiplier: terms.holidayMultiplier,
-      },
-    ];
-  }
+  if (holidays.has(day.date)) return holidayPortions(day, terms.holidayMultiplier);
 
   const regular = Math.min(day.minutes, terms.dailyHours * 60);
 
@@ -160,15 +165,7 @@ function payrollPortions(
   holidays: ReadonlySet<string>,
   overtimeUsed: { minutes: number },
 ): Portion[] {
-  if (holidays.has(day.date)) {
-    return [
-      {
-        bucket: 'HOLIDAY',
-        minutes: day.minutes,
-        multiplier: rules.holidayMultiplier,
-      },
-    ];
-  }
+  if (holidays.has(day.date)) return holidayPortions(day, rules.holidayMultiplier);
 
   const regular = Math.min(day.minutes, terms.dailyHours * 60);
   const extra = day.minutes - regular;

@@ -2,6 +2,8 @@ export const MINUTE_STEP = 15;
 export const ACTIVITY_MIN_MINUTES = 15;
 export const ACTIVITY_MAX_MINUTES = 8 * 60;
 export const DAY_MAX_MINUTES = 24 * 60;
+export const HOLIDAY_REST_MINUTES = 8 * 60;
+export const HOLIDAY_REST_ACTIVITY = 'Día feriado';
 
 export const WEEK_LENGTH = 7;
 
@@ -19,6 +21,11 @@ export function formatMinutes(value: number): string {
 
 function utcDate(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
+}
+
+export function isWeekday(isoDate: string): boolean {
+  const weekday = utcDate(isoDate).getUTCDay();
+  return weekday !== 0 && weekday !== 6;
 }
 
 export function isMonday(isoDate: string): boolean {

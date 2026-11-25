@@ -497,6 +497,29 @@ create table if not exists public."HOLIDAYS" (
 create unique index if not exists "idx_HOLIDAYS_country_code_holiday_date"
   on public."HOLIDAYS" (country_code, holiday_date);
 
+do $$
+begin
+  if not exists (
+    select 1
+      from information_schema.columns
+     where table_schema = 'public'
+       and table_name = 'TIMESHEET_DAYS'
+       and column_name = 'holiday_worked'
+  ) then
+    alter table public."TIMESHEET_DAYS"
+      add column holiday_worked boolean not null default false;
+
+    update public."TIMESHEET_DAYS" d
+       set holiday_worked = true
+      from public."TIMESHEETS" t
+      join public."PROJECT_ASSIGNMENTS" pa on pa.id = t.assignment_id
+      join public."HOLIDAYS" h on h.country_code = pa.country_code
+     where t.id = d.timesheet_id
+       and h.holiday_date = d.work_date;
+  end if;
+end;
+$$;
+
 create table if not exists public."PAYROLL_COUNTRY_RULES" (
   country_code                 char(2)       primary key,
   overtime_multiplier          numeric(4, 2) not null default 2,
@@ -1094,11 +1117,12 @@ begin
 
   for v_day in select * from jsonb_array_elements(coalesce(p_days, '[]'::jsonb))
   loop
-    insert into public."TIMESHEET_DAYS" (timesheet_id, work_date, note)
+    insert into public."TIMESHEET_DAYS" (timesheet_id, work_date, note, holiday_worked)
     values (
       v_timesheet_id,
       (v_day ->> 'workDate')::date,
-      nullif(v_day ->> 'note', '')
+      nullif(v_day ->> 'note', ''),
+      coalesce((v_day ->> 'holidayWorked')::boolean, false)
     )
     returning id into v_day_id;
 
