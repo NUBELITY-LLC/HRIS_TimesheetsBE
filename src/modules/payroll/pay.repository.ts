@@ -33,7 +33,13 @@ export type TimesheetPayRecord = {
   week_start_date: string;
   week_end_date: string;
   assignment: (PayTermsRecord & { rate_changes: RateChangeRecord[] | null }) | null;
-  days: { work_date: string; total_hours: number }[] | null;
+  days:
+    | {
+        work_date: string;
+        total_hours: number;
+        activities: { hours: number; holiday_rest: boolean }[] | null;
+      }[]
+    | null;
 };
 
 export const PAY_TERMS_COLUMNS =
@@ -54,7 +60,7 @@ export async function findTimesheetsForPay(ids: number[]): Promise<TimesheetPayR
       `id, status, week_start_date, week_end_date, ` +
         `assignment:PROJECT_ASSIGNMENTS!inner(${PAY_TERMS_COLUMNS}, ` +
         `rate_changes:ASSIGNMENT_RATE_CHANGES(${RATE_CHANGE_COLUMNS})), ` +
-        'days:TIMESHEET_DAYS(work_date, total_hours)',
+        'days:TIMESHEET_DAYS(work_date, total_hours, activities:TIMESHEET_ACTIVITIES(hours, holiday_rest))',
     )
     .in('id', ids);
 

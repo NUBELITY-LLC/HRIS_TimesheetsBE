@@ -29,13 +29,13 @@ export async function listAssignments(req: Request, res: Response): Promise<void
 
 export async function getWeek(req: Request, res: Response): Promise<void> {
   const query = validatedQuery<CurrentTimesheetQuery>(res);
-  const timesheet = await timesheetsService.getWeek(
+  const week = await timesheetsService.getWeek(
     query.assignmentId,
     query.weekStart,
     requireActor(req),
   );
 
-  ok(res, { timesheet });
+  ok(res, week);
 }
 
 export async function getOne(req: Request, res: Response): Promise<void> {

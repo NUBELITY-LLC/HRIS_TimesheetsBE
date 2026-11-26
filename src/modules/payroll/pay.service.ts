@@ -219,6 +219,9 @@ export async function payForTimesheets(ids: number[]): Promise<Map<number, PayBr
         days: (record.days ?? []).map((day) => ({
           date: day.work_date,
           minutes: hoursToMinutes(Number(day.total_hours)),
+          restMinutes: (day.activities ?? [])
+            .filter((activity) => activity.holiday_rest)
+            .reduce((total, activity) => total + hoursToMinutes(Number(activity.hours)), 0),
         })),
         holidays: holidays.get(countryCode) ?? new Set(),
         payrollRules: rules.get(countryCode) ?? DEFAULT_PAYROLL_RULES,

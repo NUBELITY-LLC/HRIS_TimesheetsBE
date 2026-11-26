@@ -25,10 +25,13 @@ import {
 } from '../approvals/approvals.storage.js';
 import {
   DAY_MAX_MINUTES,
+  HOLIDAY_REST_ACTIVITY,
+  HOLIDAY_REST_MINUTES,
   currentWeekStartISO,
   formatMinutes,
   hoursToMinutes,
   isMonday,
+  isWeekday,
   isWithinWeek,
   minutesToHours,
   weekEndOf,
@@ -92,7 +95,13 @@ export type TimesheetView = {
     date: string;
     minutes: number;
     note: string | null;
-    activities: Array<{ lineNo: number; minutes: number; activity: string }>;
+    holidayWorked: boolean;
+    activities: Array<{
+      lineNo: number;
+      minutes: number;
+      activity: string;
+      holidayRest: boolean;
+    }>;
   }>;
   approvals?: ApprovalStepView[];
   attachments?: TimesheetAttachmentView[];
@@ -229,6 +238,7 @@ async function withDetail(record: repository.TimesheetRecord): Promise<Timesheet
       date: day.work_date,
       minutes: hoursToMinutes(Number(day.total_hours)),
       note: day.note,
+      holidayWorked: day.holiday_worked,
       activities: day.activities
         .slice()
         .sort((a, b) => a.line_no - b.line_no)
@@ -236,6 +246,7 @@ async function withDetail(record: repository.TimesheetRecord): Promise<Timesheet
           lineNo: activity.line_no,
           minutes: hoursToMinutes(Number(activity.hours)),
           activity: activity.activity,
+          holidayRest: activity.holiday_rest,
         })),
     })),
     approvals: approvals.map(toApprovalView),
@@ -315,17 +326,37 @@ export async function listAssignments(actor: Actor): Promise<AssignmentView[]> {
     .filter((assignment): assignment is AssignmentView => assignment !== null);
 }
 
+export type WeekHolidayView = { date: string; name: string };
+
+async function weekHolidays(
+  assignment: repository.AssignmentRecord,
+  weekStart: string,
+): Promise<WeekHolidayView[]> {
+  const rows = await repository.findHolidaysInRange({
+    countryCode: assignment.country_code,
+    from: weekStart,
+    to: weekEndOf(weekStart),
+  });
+
+  return rows
+    .map((row) => ({ date: row.holiday_date, name: row.name }))
+    .sort((left, right) => left.date.localeCompare(right.date));
+}
+
 export async function getWeek(
   assignmentId: number,
   weekStart: string,
   actor: Actor,
-): Promise<TimesheetView | null> {
+): Promise<{ timesheet: TimesheetView | null; holidays: WeekHolidayView[] }> {
   assertWeekStart(weekStart);
-  await loadOwnAssignment(assignmentId, actor);
+  const assignment = await loadOwnAssignment(assignmentId, actor);
 
-  const record = await repository.findTimesheetByWeek(assignmentId, weekStart);
+  const [record, holidays] = await Promise.all([
+    repository.findTimesheetByWeek(assignmentId, weekStart),
+    weekHolidays(assignment, weekStart),
+  ]);
 
-  return record ? withDetail(record) : null;
+  return { timesheet: record ? await withDetail(record) : null, holidays };
 }
 
 export async function getTimesheet(id: number, actor: Actor): Promise<TimesheetView> {
@@ -340,13 +371,28 @@ export async function getTimesheet(id: number, actor: Actor): Promise<TimesheetV
   return withDetail(record);
 }
 
+const HOLIDAY_REST_ROW = {
+  hours: minutesToHours(HOLIDAY_REST_MINUTES),
+  activity: HOLIDAY_REST_ACTIVITY,
+  holidayRest: true,
+};
+
+function holidayRestDay(workDate: string, note: string | null): repository.DraftDayPayload {
+  return { workDate, note, holidayWorked: false, activities: [HOLIDAY_REST_ROW] };
+}
+
 function buildDraftPayload(
   input: SaveDraftInput,
   assignment: repository.AssignmentRecord,
+  holidays: ReadonlySet<string>,
 ): repository.DraftDayPayload[] {
   const issues: Array<{ path: string; message: string }> = [];
   const days: repository.DraftDayPayload[] = [];
   const projectEnd = projectCaptureEnd(assignment);
+  const capturable = (date: string) =>
+    date >= assignment.start_date &&
+    (!assignment.end_date || date <= assignment.end_date) &&
+    (!projectEnd || date <= projectEnd);
 
   input.days.forEach((day, index) => {
     if (!isWithinWeek(day.date, input.weekStart)) {
@@ -381,8 +427,19 @@ function buildDraftPayload(
       return;
     }
 
+    const note = day.note?.trim() || null;
     const activities = day.activities;
-    const dayMinutes = activities.reduce((total, activity) => total + activity.minutes, 0);
+    const paidHoliday = holidays.has(day.date) && isWeekday(day.date);
+
+    if (paidHoliday && !(day.holidayWorked && activities.length)) {
+      days.push(holidayRestDay(day.date, note));
+      return;
+    }
+
+    const holidayWorked = holidays.has(day.date) && activities.length > 0;
+    const dayMinutes =
+      activities.reduce((total, activity) => total + activity.minutes, 0) +
+      (paidHoliday ? HOLIDAY_REST_MINUTES : 0);
 
     if (dayMinutes > DAY_MAX_MINUTES) {
       issues.push({
@@ -396,11 +453,15 @@ function buildDraftPayload(
 
     days.push({
       workDate: day.date,
-      note: day.note?.trim() || null,
-      activities: activities.map((activity) => ({
-        hours: minutesToHours(activity.minutes),
-        activity: activity.activity,
-      })),
+      note,
+      holidayWorked,
+      activities: [
+        ...(paidHoliday ? [HOLIDAY_REST_ROW] : []),
+        ...activities.map((activity) => ({
+          hours: minutesToHours(activity.minutes),
+          activity: activity.activity,
+        })),
+      ],
     });
   });
 
@@ -408,7 +469,21 @@ function buildDraftPayload(
     throw ApiError.unprocessable('El timesheet tiene dias invalidos', issues);
   }
 
-  return days;
+  const sent = new Set(input.days.map((day) => day.date));
+
+  for (const date of holidays) {
+    if (
+      sent.has(date) ||
+      !isWeekday(date) ||
+      !isWithinWeek(date, input.weekStart) ||
+      !capturable(date)
+    ) {
+      continue;
+    }
+    days.push(holidayRestDay(date, null));
+  }
+
+  return days.sort((left, right) => left.workDate.localeCompare(right.workDate));
 }
 
 function translateRpcFailure(error: RpcError): ApiError {
@@ -482,7 +557,12 @@ export async function saveDraft(input: SaveDraftInput, actor: Actor): Promise<Ti
   const assignment = await loadOwnAssignment(input.assignmentId, actor);
   assertWeekInAssignment(assignment, input.weekStart);
 
-  const days = buildDraftPayload(input, assignment);
+  const holidays = await weekHolidays(assignment, input.weekStart);
+  const days = buildDraftPayload(
+    input,
+    assignment,
+    new Set(holidays.map((holiday) => holiday.date)),
+  );
 
   const timesheetId = await runRpc(() =>
     repository.saveDraft({
