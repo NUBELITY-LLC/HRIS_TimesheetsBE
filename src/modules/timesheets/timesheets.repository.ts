@@ -54,6 +54,7 @@ export type ActivityRecord = {
   line_no: number;
   hours: number;
   activity: string;
+  holiday_rest: boolean;
 };
 
 export type DayRecord = {
@@ -172,7 +173,7 @@ export async function findTimesheetByWeek(
 export async function findDays(timesheetId: number): Promise<DayRecord[]> {
   const { data, error } = await supabase
     .from('TIMESHEET_DAYS')
-    .select('id, work_date, total_hours, note, holiday_worked, activities:TIMESHEET_ACTIVITIES(id, line_no, hours, activity)')
+    .select('id, work_date, total_hours, note, holiday_worked, activities:TIMESHEET_ACTIVITIES(id, line_no, hours, activity, holiday_rest)')
     .eq('timesheet_id', timesheetId)
     .order('work_date', { ascending: true })
     .order('line_no', { referencedTable: 'TIMESHEET_ACTIVITIES', ascending: true });
@@ -304,7 +305,7 @@ export type DraftDayPayload = {
   workDate: string;
   note: string | null;
   holidayWorked: boolean;
-  activities: Array<{ hours: number; activity: string }>;
+  activities: Array<{ hours: number; activity: string; holidayRest?: boolean }>;
 };
 
 const CHECK_VIOLATION = '23514';

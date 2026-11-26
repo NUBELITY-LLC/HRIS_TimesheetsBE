@@ -520,6 +520,9 @@ begin
 end;
 $$;
 
+alter table public."TIMESHEET_ACTIVITIES"
+  add column if not exists holiday_rest boolean not null default false;
+
 create table if not exists public."PAYROLL_COUNTRY_RULES" (
   country_code                 char(2)       primary key,
   overtime_multiplier          numeric(4, 2) not null default 2,
@@ -1126,12 +1129,13 @@ begin
     )
     returning id into v_day_id;
 
-    insert into public."TIMESHEET_ACTIVITIES" (day_id, line_no, hours, activity)
+    insert into public."TIMESHEET_ACTIVITIES" (day_id, line_no, hours, activity, holiday_rest)
     select
       v_day_id,
       line_no::smallint,
       (activity ->> 'hours')::numeric,
-      activity ->> 'activity'
+      activity ->> 'activity',
+      coalesce((activity ->> 'holidayRest')::boolean, false)
       from jsonb_array_elements(coalesce(v_day -> 'activities', '[]'::jsonb))
         with ordinality as entries(activity, line_no);
   end loop;

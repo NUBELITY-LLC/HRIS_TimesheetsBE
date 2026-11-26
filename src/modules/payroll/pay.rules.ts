@@ -57,7 +57,7 @@ export type PayTerms = {
   holidayMultiplier: number;
 };
 
-export type PayDayInput = { date: string; minutes: number; holidayWorked?: boolean };
+export type PayDayInput = { date: string; minutes: number; restMinutes?: number };
 
 export type PayLine = {
   bucket: PayBucket;
@@ -134,9 +134,12 @@ export function hourlyRateFor(
 }
 
 function holidayPortions(day: PayDayInput, multiplier: number): Portion[] {
-  return day.holidayWorked
-    ? [{ bucket: 'HOLIDAY', minutes: day.minutes, multiplier }]
-    : [{ bucket: 'HOLIDAY_REST', minutes: day.minutes, multiplier: 1 }];
+  const rest = Math.min(day.restMinutes ?? 0, day.minutes);
+
+  return [
+    { bucket: 'HOLIDAY_REST', minutes: rest, multiplier: 1 },
+    { bucket: 'HOLIDAY', minutes: day.minutes - rest, multiplier },
+  ];
 }
 
 function contractorPortions(

@@ -96,7 +96,12 @@ export type TimesheetView = {
     minutes: number;
     note: string | null;
     holidayWorked: boolean;
-    activities: Array<{ lineNo: number; minutes: number; activity: string }>;
+    activities: Array<{
+      lineNo: number;
+      minutes: number;
+      activity: string;
+      holidayRest: boolean;
+    }>;
   }>;
   approvals?: ApprovalStepView[];
   attachments?: TimesheetAttachmentView[];
@@ -241,6 +246,7 @@ async function withDetail(record: repository.TimesheetRecord): Promise<Timesheet
           lineNo: activity.line_no,
           minutes: hoursToMinutes(Number(activity.hours)),
           activity: activity.activity,
+          holidayRest: activity.holiday_rest,
         })),
     })),
     approvals: approvals.map(toApprovalView),
@@ -365,15 +371,14 @@ export async function getTimesheet(id: number, actor: Actor): Promise<TimesheetV
   return withDetail(record);
 }
 
+const HOLIDAY_REST_ROW = {
+  hours: minutesToHours(HOLIDAY_REST_MINUTES),
+  activity: HOLIDAY_REST_ACTIVITY,
+  holidayRest: true,
+};
+
 function holidayRestDay(workDate: string, note: string | null): repository.DraftDayPayload {
-  return {
-    workDate,
-    note,
-    holidayWorked: false,
-    activities: [
-      { hours: minutesToHours(HOLIDAY_REST_MINUTES), activity: HOLIDAY_REST_ACTIVITY },
-    ],
-  };
+  return { workDate, note, holidayWorked: false, activities: [HOLIDAY_REST_ROW] };
 }
 
 function buildDraftPayload(
@@ -432,7 +437,9 @@ function buildDraftPayload(
     }
 
     const holidayWorked = holidays.has(day.date) && activities.length > 0;
-    const dayMinutes = activities.reduce((total, activity) => total + activity.minutes, 0);
+    const dayMinutes =
+      activities.reduce((total, activity) => total + activity.minutes, 0) +
+      (paidHoliday ? HOLIDAY_REST_MINUTES : 0);
 
     if (dayMinutes > DAY_MAX_MINUTES) {
       issues.push({
@@ -448,10 +455,13 @@ function buildDraftPayload(
       workDate: day.date,
       note,
       holidayWorked,
-      activities: activities.map((activity) => ({
-        hours: minutesToHours(activity.minutes),
-        activity: activity.activity,
-      })),
+      activities: [
+        ...(paidHoliday ? [HOLIDAY_REST_ROW] : []),
+        ...activities.map((activity) => ({
+          hours: minutesToHours(activity.minutes),
+          activity: activity.activity,
+        })),
+      ],
     });
   });
 
