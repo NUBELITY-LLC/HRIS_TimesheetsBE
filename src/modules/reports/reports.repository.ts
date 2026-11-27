@@ -13,9 +13,17 @@ export type PersonRecord = {
   role: { id: number; code: string; name: string } | null;
 };
 
+export type ReportActivityRecord = {
+  line_no: number;
+  hours: number;
+  activity: string;
+  holiday_rest: boolean;
+};
+
 export type ReportDayRecord = {
   work_date: string;
   total_hours: number;
+  activities?: ReportActivityRecord[] | null;
   timesheet: {
     id: number;
     submission_code: string | null;
@@ -93,6 +101,10 @@ const REPORT_DAY_COLUMNS =
   'assignment_code, consultant:USERS!inner(id, full_name, job_title), ' +
   'project:PROJECTS!inner(id, project_name, code, status, ' +
   'client:CLIENTS!inner(id, client_name, company:COMPANIES!inner(id, trade_name)))))';
+
+const HOURS_REPORT_DAY_COLUMNS =
+  REPORT_DAY_COLUMNS +
+  ', activities:TIMESHEET_ACTIVITIES(line_no, hours, activity, holiday_rest)';
 
 const SCOPE_PROJECT_COLUMNS =
   'id, project_name, code, status, ' +
@@ -202,7 +214,7 @@ export async function findPersonIdsInScope(scope: ReportScope): Promise<number[]
 export async function findReportDays(filters: ReportDaysFilters): Promise<ReportDayRecord[]> {
   let query = supabase
     .from('TIMESHEET_DAYS')
-    .select(REPORT_DAY_COLUMNS)
+    .select(HOURS_REPORT_DAY_COLUMNS)
     .eq('timesheet.assignment.consultant_id', filters.consultantId)
     .in('timesheet.status', filters.statuses)
     .gte('work_date', filters.from)
@@ -218,7 +230,8 @@ export async function findReportDays(filters: ReportDaysFilters): Promise<Report
 
   const { data, error } = await query
     .order('work_date', { ascending: true })
-    .order('id', { ascending: true });
+    .order('id', { ascending: true })
+    .order('line_no', { referencedTable: 'TIMESHEET_ACTIVITIES', ascending: true });
 
   if (error) fail('findReportDays', error);
 

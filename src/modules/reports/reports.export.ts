@@ -80,7 +80,11 @@ type ReportDocument = {
   fileName: string;
 };
 
-export type HoursScope = { companyName: string | null; projectName: string | null };
+export type HoursScope = {
+  companyName: string | null;
+  projectName: string | null;
+  includeActivities?: boolean;
+};
 
 export type CompanyExportOptions = {
   byProject: boolean;
@@ -531,6 +535,33 @@ export function renderHoursReport(
   ]);
 
   const name = report.person.fullName;
+  const sections: Section[] = [
+    { sheet: 'Hours', heading: 'DAILY DETAIL', columns, rows, pdf: true },
+  ];
+
+  if (scope.includeActivities) {
+    sections.push({
+      sheet: 'Activities',
+      heading: 'ACTIVITIES BY DAY',
+      columns: [
+        { header: 'Date', kind: 'date', width: 13, pdfWidth: 56 },
+        { header: 'Project', kind: 'text', width: 26, pdfWidth: 140 },
+        { header: 'Submission', kind: 'text', width: 22, pdfWidth: 95 },
+        { header: 'Activity', kind: 'text', width: 60, pdfWidth: 0 },
+        { header: 'Hours', kind: 'hours', width: 10, pdfWidth: 40, sum: true },
+      ],
+      rows: entries.flatMap(({ date, entry }) =>
+        entry.activities.map((activity): CellValue[] => [
+          date,
+          entry.project?.name ?? '',
+          entry.submissionCode ?? '',
+          activity.activity,
+          activity.minutes,
+        ]),
+      ),
+      pdf: true,
+    });
+  }
 
   return render(
     {
@@ -545,9 +576,7 @@ export function renderHoursReport(
         ['Days with hours', String(report.workedDays)],
         ['Total amount', totalsLabel(report.totals)],
       ],
-      sections: [
-        { sheet: 'Hours', heading: 'DAILY DETAIL', columns, rows, pdf: true },
-      ],
+      sections,
       fileName: `hours-report-${slug(name)}-${report.from}_${report.to}`,
     },
     format,
