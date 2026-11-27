@@ -16,6 +16,7 @@ const COLORS = {
   header: '5B9BD5',
   rule: 'D9E2F3',
   total: 'EEF3FA',
+  subtotal: 'F6F9FD',
   white: 'FFFFFF',
   ink: '1F2937',
 };
@@ -71,6 +72,7 @@ type Section = {
   columns: Column[];
   rows: CellValue[][];
   pdf: boolean;
+  subtotals?: Map<number, number>;
 };
 
 type ReportDocument = {
@@ -150,8 +152,9 @@ function moneyFormat(currency: string): string {
   return currency ? `#,##0.00 "${currency}"` : '#,##0.00';
 }
 
-function sumColumn(rows: CellValue[][], index: number): CellValue {
-  const values = rows
+function sumColumn(section: Section, index: number): CellValue {
+  const values = section.rows
+    .filter((_, rowIndex) => !section.subtotals?.has(rowIndex))
     .map((row) => row[index] ?? null)
     .filter((value): value is Exclude<CellValue, null> => value !== null);
 
@@ -171,7 +174,7 @@ function sumColumn(rows: CellValue[][], index: number): CellValue {
 
 function totalsRow(section: Section): CellValue[] {
   return section.columns.map((column, index) =>
-    index === 0 ? 'TOTAL' : column.sum ? sumColumn(section.rows, index) : null,
+    index === 0 ? 'TOTAL' : column.sum ? sumColumn(section, index) : null,
   );
 }
 
@@ -269,16 +272,30 @@ async function renderXlsx(document: ReportDocument): Promise<Buffer> {
     rowNumber += 1;
 
     const firstDataRow = rowNumber;
-    for (const values of section.rows) {
+    section.rows.forEach((values, rowIndex) => {
       const row = sheet.getRow(rowNumber);
+      const groupStart = section.subtotals?.get(rowIndex);
       section.columns.forEach((column, index) => {
         const cell = row.getCell(index + 1);
-        writeCell(cell, column, values[index] ?? null);
+        const value = values[index] ?? null;
+        writeCell(cell, column, value);
         cell.border = rule;
         cell.alignment = { vertical: 'top', wrapText: column.kind === 'text' };
+
+        if (groupStart === undefined) return;
+
+        if (column.sum && value !== null) {
+          const letter = columnLetter(index);
+          cell.value = {
+            formula: `SUBTOTAL(109,${letter}${firstDataRow + groupStart}:${letter}${rowNumber - 1})`,
+            result: cell.value as number,
+          };
+        }
+        cell.font = { bold: true };
+        cell.fill = fill(COLORS.subtotal);
       });
       rowNumber += 1;
-    }
+    });
     const lastDataRow = Math.max(rowNumber - 1, firstDataRow);
 
     const totals = totalsRow(section);
@@ -383,6 +400,7 @@ function renderPdf(document: ReportDocument): Promise<Buffer> {
         return {
           height,
           draw: (y: number) => {
+            doc.font(options.bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(fontSize);
             if (options.fillColor) {
               doc.rect(left, y, width, height).fill(`#${options.fillColor}`);
             }
@@ -424,14 +442,17 @@ function renderPdf(document: ReportDocument): Promise<Buffer> {
       header();
 
       const rows = [
-        ...section.rows.map((values) => ({ values, bold: false })),
-        { values: totalsRow(section), bold: true },
+        ...section.rows.map((values, rowIndex) => ({
+          values,
+          fillColor: section.subtotals?.has(rowIndex) ? COLORS.subtotal : null,
+        })),
+        { values: totalsRow(section), fillColor: COLORS.total },
       ];
 
-      for (const { values, bold } of rows) {
+      for (const { values, fillColor } of rows) {
         const row = cells(
           visible.map(({ column, index }) => displayCell(column, values[index] ?? null)),
-          bold ? { bold, fillColor: COLORS.total } : {},
+          fillColor ? { bold: true, fillColor } : {},
         );
 
         if (doc.y + row.height > bottom) {
@@ -540,6 +561,32 @@ export function renderHoursReport(
   ];
 
   if (scope.includeActivities) {
+    const activityRows: CellValue[][] = [];
+    const subtotals = new Map<number, number>();
+
+    for (const day of report.days) {
+      const dayStart = activityRows.length;
+      const grouped = day.entries.length > 1;
+
+      for (const entry of day.entries) {
+        const project = entry.project?.name ?? '';
+        const submission = entry.submissionCode ?? '';
+        const entryStart = activityRows.length;
+
+        for (const activity of entry.activities) {
+          activityRows.push([day.date, project, submission, activity.activity, activity.minutes]);
+        }
+
+        if (grouped) {
+          subtotals.set(activityRows.length, entryStart);
+          activityRows.push([day.date, project, submission, 'Project subtotal', entry.minutes]);
+        }
+      }
+
+      subtotals.set(activityRows.length, dayStart);
+      activityRows.push([day.date, '', '', 'Day total', day.minutes]);
+    }
+
     sections.push({
       sheet: 'Activities',
       heading: 'ACTIVITIES BY DAY',
@@ -550,15 +597,8 @@ export function renderHoursReport(
         { header: 'Activity', kind: 'text', width: 60, pdfWidth: 0 },
         { header: 'Hours', kind: 'hours', width: 10, pdfWidth: 40, sum: true },
       ],
-      rows: entries.flatMap(({ date, entry }) =>
-        entry.activities.map((activity): CellValue[] => [
-          date,
-          entry.project?.name ?? '',
-          entry.submissionCode ?? '',
-          activity.activity,
-          activity.minutes,
-        ]),
-      ),
+      rows: activityRows,
+      subtotals,
       pdf: true,
     });
   }
