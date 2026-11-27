@@ -83,6 +83,7 @@ export const hoursExportQuerySchema = withValidRange(
     from: isoDate,
     to: isoDate,
     ...scopeFields,
+    activities: flag,
     ...formatField,
   }),
 );

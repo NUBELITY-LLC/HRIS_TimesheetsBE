@@ -37,6 +37,14 @@ export type PersonView = {
   roleName: string;
 };
 
+export type ReportActivityView = {
+  lineNo: number;
+  minutes: number;
+  hours: number;
+  activity: string;
+  holidayRest: boolean;
+};
+
 export type ReportEntryView = {
   timesheetId: number;
   submissionCode: string | null;
@@ -54,6 +62,7 @@ export type ReportEntryView = {
   currency: string;
   amount: number;
   lines: PayLine[];
+  activities: ReportActivityView[];
 };
 
 export type ReportDayView = {
@@ -258,6 +267,19 @@ function toEntryView(
     currency: assignment?.currency ?? '',
     amount: dayPay?.amount ?? 0,
     lines: dayPay?.lines ?? [],
+    activities: (record.activities ?? [])
+      .slice()
+      .sort((left, right) => left.line_no - right.line_no)
+      .map((activity) => {
+        const activityMinutes = hoursToMinutes(Number(activity.hours));
+        return {
+          lineNo: activity.line_no,
+          minutes: activityMinutes,
+          hours: minutesToHours(activityMinutes),
+          activity: activity.activity,
+          holidayRest: activity.holiday_rest,
+        };
+      }),
   };
 }
 
@@ -599,6 +621,7 @@ export async function exportHoursReport(query: HoursExportQuery): Promise<Export
         scopes.companies.find((company) => company.id === query.companyId)?.name ?? null,
       projectName:
         scopes.projects.find((project) => project.id === query.projectId)?.name ?? null,
+      includeActivities: query.activities,
     },
     query.format,
   );
